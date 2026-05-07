@@ -80,23 +80,23 @@
     "Mailbox", "Message Video", "Medication", "Medication Outline", "Meter Electric", "Meter Gas",
     "Microsoft Xbox", "Microwave", "Minus", "Monitor", "Motion Sensor", "Movie Roll",
     "Music", "Outdoor Lamp", "Oven", "Package", "Package Closed", "Pill",
-    "Pill Multiple", "Plus", "Play", "Play Pause", "Pause", "Pool",
-    "Power", "Power Plug", "Progress Clock", "Printer", "Printer 3D", "Projector",
-    "Projector Off", "Robot Vacuum", "Roller Shade", "Roller Shade Closed", "Router", "Router Network",
-    "Security", "Shower", "Skip Next", "Skip Previous", "Smoke Detector", "Snowflake",
-    "Snowflake Alert", "Snowflake Thermometer", "Sofa", "Solar Panel", "Solar Panel Large", "Solar Power",
-    "Solar Power Variant", "Speaker", "Spotlight", "Sprinkler", "Stop", "String Lights",
-    "String Lights Off", "Power Socket UK", "Power Socket EU", "Power Socket US", "Sun", "Table",
-    "Television", "Television Off", "Thermometer", "Thermometer Alert", "Thermometer High", "Thermometer Low",
-    "Thermostat", "Home-Thermostat", "Thermostat Auto", "Thermometer Water", "Timer", "Toilet",
-    "Transmission Tower", "Trash Can", "Volume High", "Wall Outlet", "Wall Sconce", "Washer",
-    "Water", "Water Heater", "Water Percent", "Water Alert", "Weather Cloudy", "Weather Cloudy Alert",
-    "Weather Dust", "Weather Fog", "Weather Hail", "Weather Hazy", "Weather Hurricane", "Weather Lightning",
-    "Weather Lightning Rainy", "Weather Night", "Weather Night Cloudy", "Weather Partly Cloudy", "Weather Partly Lightning", "Weather Partly Rainy",
-    "Weather Partly Snowy", "Weather Partly Snowy Rainy", "Weather Pouring", "Weather Rainy", "Weather Snowy", "Weather Snowy Heavy",
-    "Weather Snowy Rainy", "Weather Sunny", "Weather Sunny Alert", "Weather Sunny Off", "Weather Sunset", "Weather Sunset Down",
-    "Weather Sunset Up", "Weather Tornado", "Weather Windy", "Weather Windy Variant", "Wind Power", "Wind Turbine",
-    "Wind Turbine Alert", "Wind Turbine Check", "Window Closed", "Window Open", "Window Shutter", "Window Shutter Open",
+    "Pill Multiple", "Plus", "Play Pause", "Pool", "Power", "Power Plug",
+    "Progress Clock", "Printer", "Printer 3D", "Projector", "Projector Off", "Robot Vacuum",
+    "Roller Shade", "Roller Shade Closed", "Router", "Router Network", "Security", "Shower",
+    "Skip Next", "Skip Previous", "Smoke Detector", "Snowflake", "Snowflake Alert", "Snowflake Thermometer",
+    "Sofa", "Solar Panel", "Solar Panel Large", "Solar Power", "Solar Power Variant", "Speaker",
+    "Spotlight", "Sprinkler", "Stop", "String Lights", "String Lights Off", "Power Socket UK",
+    "Power Socket EU", "Power Socket US", "Sun", "Table", "Television", "Television Off",
+    "Thermometer", "Thermometer Alert", "Thermometer High", "Thermometer Low", "Thermostat", "Home-Thermostat",
+    "Thermostat Auto", "Thermometer Water", "Timer", "Toilet", "Transmission Tower", "Trash Can",
+    "Volume High", "Wall Outlet", "Wall Sconce", "Washer", "Water", "Water Heater",
+    "Water Percent", "Water Alert", "Weather Cloudy", "Weather Cloudy Alert", "Weather Dust", "Weather Fog",
+    "Weather Hail", "Weather Hazy", "Weather Hurricane", "Weather Lightning", "Weather Lightning Rainy", "Weather Night",
+    "Weather Night Cloudy", "Weather Partly Cloudy", "Weather Partly Lightning", "Weather Partly Rainy", "Weather Partly Snowy", "Weather Partly Snowy Rainy",
+    "Weather Pouring", "Weather Rainy", "Weather Snowy", "Weather Snowy Heavy", "Weather Snowy Rainy", "Weather Sunny",
+    "Weather Sunny Alert", "Weather Sunny Off", "Weather Sunset", "Weather Sunset Down", "Weather Sunset Up", "Weather Tornado",
+    "Weather Windy", "Weather Windy Variant", "Wind Power", "Wind Turbine", "Wind Turbine Alert", "Wind Turbine Check",
+    "Window Closed", "Window Open", "Window Shutter", "Window Shutter Open",
   ];
   // --- GENERATED:ICONS END ---
 
@@ -238,7 +238,7 @@
     "background:#212121;overflow:hidden;pointer-events:none}" +
     ".sp-media-h-slider span{display:block;width:62%;height:100%;background:#fff;border-radius:999px}" +
     ".sp-media-position-time{z-index:1}" +
-    ".sp-media-now-title{font-size:var(--media-title);line-height:1;color:#fff;font-weight:300;z-index:1;" +
+    ".sp-media-now-title{font-size:var(--btn-icon);line-height:1;color:#fff;font-weight:300;z-index:1;" +
     "display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden;word-break:break-word}" +
     ".sp-media-now-artist{font-size:var(--btn-label);line-height:1.2;color:#fff}" +
     ".sp-btn-double{grid-row:span 2}" +
@@ -1836,6 +1836,7 @@
     if (b && b.type === "weather_forecast") {
       b.type = "weather";
       b.precision = "tomorrow";
+      if (b.label === "Weather") b.label = "";
     }
     if (b && b.type === "text_sensor") {
       b.type = "sensor";
@@ -2340,7 +2341,6 @@
     r.setProperty("--btn-pad", CFG.btn.padding + "cqw");
     r.setProperty("--btn-icon", CFG.btn.iconSize + "cqw");
     r.setProperty("--btn-label", CFG.btn.labelSize + "cqw");
-    r.setProperty("--media-title", (CFG.btn.mediaTitleSize || (CFG.btn.iconSize * 0.75)) + "cqw");
     r.setProperty("--btn-lines", String(CFG.btn.labelLines || 1));
     r.setProperty("--btn-lines-dbl", String(CFG.btn.labelLinesDouble || CFG.btn.labelLines || 1));
     r.setProperty("--sensor-top", CFG.sensorBadge.top + "cqw");

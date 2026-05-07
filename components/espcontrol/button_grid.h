@@ -112,6 +112,7 @@ inline ParsedCfg normalize_parsed_cfg(ParsedCfg p) {
   if (p.type == "weather_forecast") {
     p.type = "weather";
     p.precision = "tomorrow";
+    if (p.label == "Weather") p.label.clear();
   }
   if (p.type == "media") {
     if (p.sensor == "controls") {
@@ -327,6 +328,7 @@ struct WeatherForecastCardRef {
   lv_obj_t *label_lbl;
   std::string entity_id;
   std::string day;
+  std::string label;
   bool valid = false;
   int high = 0;
   int low = 0;
@@ -358,8 +360,10 @@ inline void apply_weather_forecast_card_text(const WeatherForecastCardRef &ref,
                                              bool valid, int high, int low,
                                              const std::string &unit) {
   if (ref.label_lbl) {
-    lv_label_set_text(ref.label_lbl,
-      ref.day == "today" ? "Temperatures Today" : "Temperatures Tomorrow");
+    std::string label = ref.label.empty()
+      ? (ref.day == "today" ? "Today" : "Tomorrow")
+      : ref.label;
+    lv_label_set_text(ref.label_lbl, label.c_str());
   }
   if (!ref.value_lbl || !ref.unit_lbl) return;
   if (!valid) {
@@ -400,14 +404,15 @@ inline void apply_weather_forecast_to_entity(const std::string &entity_id,
 inline void register_weather_forecast_card(lv_obj_t *value_lbl, lv_obj_t *unit_lbl,
                                            lv_obj_t *label_lbl,
                                            const std::string &entity_id,
-                                           const std::string &day) {
+                                           const std::string &day,
+                                           const std::string &label) {
   int &count = weather_forecast_card_count();
   if (count >= MAX_GRID_SLOTS + MAX_SUBPAGE_ITEMS) {
     ESP_LOGW("weather_forecast", "Too many forecast cards; skipping updates");
     return;
   }
   weather_forecast_card_refs()[count++] = {
-    value_lbl, unit_lbl, label_lbl, entity_id, day, false, 0, 0, ""
+    value_lbl, unit_lbl, label_lbl, entity_id, day, label, false, 0, 0, ""
   };
   apply_weather_forecast_card_text(weather_forecast_card_refs()[count - 1], false, 0, 0, "");
 }
@@ -1025,6 +1030,7 @@ inline void reset_climate_contexts() {
 
 struct ClimateHomeGridMetrics {
   lv_obj_t *page = nullptr;
+  lv_obj_t *first_card = nullptr;
   int cols = 3;
   int rows = 3;
 };
@@ -1034,9 +1040,11 @@ inline ClimateHomeGridMetrics &climate_home_grid_metrics() {
   return metrics;
 }
 
-inline void set_climate_home_grid_metrics(lv_obj_t *page, int cols, int rows) {
+inline void set_climate_home_grid_metrics(lv_obj_t *page, int cols, int rows,
+                                          lv_obj_t *first_card = nullptr) {
   ClimateHomeGridMetrics &metrics = climate_home_grid_metrics();
   metrics.page = page;
+  metrics.first_card = first_card;
   metrics.cols = cols > 0 ? cols : 3;
   metrics.rows = rows > 0 ? rows : 3;
 }
@@ -2691,10 +2699,13 @@ inline void setup_weather_forecast_card(BtnSlot &s, const ParsedCfg &p,
   lv_label_set_text(s.sensor_lbl, "--/--");
   lv_label_set_text(s.unit_lbl, "");
   std::string day = weather_card_forecast_day(p);
-  lv_label_set_text(s.text_lbl, day == "today" ? "Temperatures Today" : "Temperatures Tomorrow");
+  std::string label = p.label.empty()
+    ? (day == "today" ? "Today" : "Tomorrow")
+    : p.label;
+  lv_label_set_text(s.text_lbl, label.c_str());
   apply_width_compensation(s.sensor_container, width_compensation_percent);
   apply_width_compensation(s.text_lbl, width_compensation_percent);
-  register_weather_forecast_card(s.sensor_lbl, s.unit_lbl, s.text_lbl, p.entity, day);
+  register_weather_forecast_card(s.sensor_lbl, s.unit_lbl, s.text_lbl, p.entity, day, p.label);
 }
 
 inline void setup_garage_card(BtnSlot &s, const ParsedCfg &p) {
@@ -4039,7 +4050,7 @@ inline const char *media_default_icon(const std::string &mode,
   if (!icon.empty() && icon != "Auto") return find_icon(icon.c_str());
   if (mode == "previous") return find_icon("Skip Previous");
   if (mode == "next") return find_icon("Skip Next");
-  if (mode == "play_pause") return find_icon("Play");
+  if (mode == "play_pause") return find_icon("Play Pause");
   if (mode == "volume") return find_icon("Volume High");
   if (mode == "position") return find_icon("Progress Clock");
   if (mode == "now_playing") return find_icon("Music");
@@ -4188,15 +4199,25 @@ inline void media_volume_grid_card_rect(lv_coord_t sw, lv_coord_t sh,
   lv_coord_t pad_bottom = lv_obj_get_style_pad_bottom(home, LV_PART_MAIN);
   lv_coord_t gap_col = lv_obj_get_style_pad_column(home, LV_PART_MAIN);
   lv_coord_t gap_row = lv_obj_get_style_pad_row(home, LV_PART_MAIN);
+  int span_cols = cols < 3 ? cols : 3;
+  int span_rows = rows < 3 ? rows : 3;
+  if (metrics.first_card) {
+    lv_area_t card_area;
+    lv_obj_get_coords(metrics.first_card, &card_area);
+    x = 10;
+    y = card_area.y1;
+    w = lv_obj_get_width(metrics.first_card) * span_cols + gap_col * (span_cols - 1);
+    h = lv_obj_get_height(metrics.first_card) * span_rows + gap_row * (span_rows - 1);
+    return;
+  }
+
   lv_coord_t usable_w = sw - pad_left - pad_right - gap_col * (cols - 1);
   lv_coord_t usable_h = sh - pad_top - pad_bottom - gap_row * (rows - 1);
   lv_coord_t cell_w = usable_w > 0 ? usable_w / cols : w;
   lv_coord_t cell_h = usable_h > 0 ? usable_h / rows : h;
-  int span_cols = cols < 3 ? cols : 3;
-  int span_rows = rows < 3 ? rows : 3;
   w = cell_w * span_cols + gap_col * (span_cols - 1);
   h = cell_h * span_rows + gap_row * (span_rows - 1);
-  x = pad_left;
+  x = 10;
   y = pad_top;
 }
 
@@ -4241,7 +4262,7 @@ inline void media_volume_layout_modal(MediaVolumeCtx *ctx) {
 
   lv_obj_set_size(ui.overlay, lv_pct(100), lv_pct(100));
   lv_obj_set_size(ui.panel, panel_w, panel_h);
-  lv_obj_align(ui.panel, LV_ALIGN_TOP_LEFT, panel_x, panel_y);
+  lv_obj_set_pos(ui.panel, panel_x, panel_y);
   lv_coord_t arc_center_x = (arc_size - visible_arc_w) / 2;
   lv_coord_t arc_center_y = inset + arc_size / 2 - panel_h / 2 + (short_side < 520 ? 6 : 10);
   lv_coord_t controls_center_y = panel_h / 2 - inset - btn_size / 2;
@@ -4296,6 +4317,7 @@ inline void media_volume_open_modal(MediaVolumeCtx *ctx) {
   lv_obj_set_style_bg_color(ui.overlay, lv_color_hex(0x000000), LV_PART_MAIN);
   lv_obj_set_style_bg_opa(ui.overlay, LV_OPA_60, LV_PART_MAIN);
   lv_obj_set_style_border_width(ui.overlay, 0, LV_PART_MAIN);
+  lv_obj_set_style_pad_all(ui.overlay, 0, LV_PART_MAIN);
   lv_obj_clear_flag(ui.overlay, LV_OBJ_FLAG_SCROLLABLE);
   lv_obj_add_event_cb(ui.overlay, [](lv_event_t *) { media_volume_hide_modal(); },
     LV_EVENT_CLICKED, nullptr);
@@ -4306,6 +4328,7 @@ inline void media_volume_open_modal(MediaVolumeCtx *ctx) {
   lv_obj_set_style_border_width(ui.panel, 0, LV_PART_MAIN);
   lv_obj_set_style_shadow_width(ui.panel, 0, LV_PART_MAIN);
   lv_obj_set_style_radius(ui.panel, 18, LV_PART_MAIN);
+  lv_obj_set_style_pad_all(ui.panel, 0, LV_PART_MAIN);
   lv_obj_clear_flag(ui.panel, LV_OBJ_FLAG_SCROLLABLE);
 
   ui.back_btn = media_volume_create_round_button(ui.panel, 32, "\U000F0141",
@@ -4395,10 +4418,6 @@ inline std::string media_status_text(const std::string &state) {
   if (state == "unavailable") return "Unavailable";
   if (state == "unknown" || state.empty()) return "Unknown";
   return sentence_cap_text(state);
-}
-
-inline const char *media_play_pause_icon_for_state(const std::string &state) {
-  return find_icon(state == "playing" ? "Pause" : "Play");
 }
 
 inline void media_set_metadata_text(lv_obj_t *label, esphome::StringRef value,
@@ -4727,7 +4746,10 @@ inline lv_obj_t *setup_media_position_layout(lv_obj_t *btn, lv_obj_t *icon_lbl,
   lv_label_set_text(value_lbl, "0:00");
   lv_obj_align(value_lbl, LV_ALIGN_TOP_LEFT, pad, pad);
   lv_obj_set_style_bg_color(btn, lv_color_hex(background_color), LV_PART_MAIN);
-  lv_obj_set_style_bg_color(btn, lv_color_hex(background_color), LV_STATE_CHECKED | LV_PART_MAIN);
+  lv_obj_set_style_bg_color(
+    btn, lv_color_hex(background_color),
+    static_cast<lv_style_selector_t>(LV_PART_MAIN) |
+      static_cast<lv_style_selector_t>(LV_STATE_CHECKED));
   return setup_media_slider_layout(
     btn, icon_lbl, text_lbl, value_lbl, p, progress_color, background_color, pad);
 }
@@ -4759,6 +4781,7 @@ inline void setup_media_card(BtnSlot &s, const ParsedCfg &p, uint32_t on_color,
     lv_obj_set_style_text_color(title_lbl, text_color, LV_PART_MAIN);
     apply_width_compensation(title_lbl, width_compensation_percent);
     s.sensor_lbl = title_lbl;
+    lv_obj_set_user_data(s.sensor_container, (void *)title_lbl);
     setup_media_now_playing_layout(
       s.btn, s.icon_lbl, s.sensor_lbl, s.text_lbl, media_title_font, pad, col_span == 1);
     return;
@@ -4778,18 +4801,16 @@ inline void setup_media_card(BtnSlot &s, const ParsedCfg &p, uint32_t on_color,
 }
 
 inline void subscribe_media_state(lv_obj_t *btn_ptr,
-                                  lv_obj_t *icon_lbl,
                                   lv_obj_t *status_lbl,
                                   const std::string &entity_id) {
   esphome::api::global_api_server->subscribe_home_assistant_state(
     entity_id, {},
     std::function<void(esphome::StringRef)>(
-      [btn_ptr, icon_lbl, status_lbl](esphome::StringRef state) {
+      [btn_ptr, status_lbl](esphome::StringRef state) {
         std::string state_text = string_ref_limited(state, HA_SHORT_STATE_MAX_LEN);
         bool playing = state_text == "playing";
         if (playing) lv_obj_add_state(btn_ptr, LV_STATE_CHECKED);
         else lv_obj_clear_state(btn_ptr, LV_STATE_CHECKED);
-        if (icon_lbl) lv_label_set_text(icon_lbl, media_play_pause_icon_for_state(state_text));
         if (status_lbl) {
           std::string label = media_status_text(state_text);
           lv_label_set_text(status_lbl, label.c_str());
@@ -5017,6 +5038,7 @@ inline SubpageBtn normalize_subpage_btn(SubpageBtn b) {
   if (b.type == "weather_forecast") {
     b.type = "weather";
     b.precision = "tomorrow";
+    if (b.label == "Weather") b.label.clear();
   }
   if (b.type == "media") {
     if (b.sensor == "controls") {
@@ -5531,7 +5553,6 @@ inline void grid_phase2(
       cfg.num_slots, MAX_GRID_SLOTS);
   }
   int ROWS = (NS + COLS - 1) / COLS;
-  set_climate_home_grid_metrics(main_page_obj, COLS, ROWS);
 
   static bool has_sensor[MAX_GRID_SLOTS] = {};
   static bool sensor_text_mode[MAX_GRID_SLOTS] = {};
@@ -5571,6 +5592,13 @@ inline void grid_phase2(
 
   OrderResult parsed;
   parse_order_string(order_str, NS, parsed);
+  lv_obj_t *first_card = nullptr;
+  if (parsed.positions[0] >= 1 && parsed.positions[0] <= NS) {
+    first_card = slots[parsed.positions[0] - 1].btn;
+  } else if (NS > 0) {
+    first_card = slots[0].btn;
+  }
+  set_climate_home_grid_metrics(main_page_obj, COLS, ROWS, first_card);
 
   for (int pos = 0; pos < NS; pos++) {
     int idx = parsed.positions[pos];
@@ -5711,10 +5739,7 @@ inline void grid_phase2(
       if (!p.entity.empty()) {
         std::string mode = media_card_mode(p.sensor);
         if (mode == "play_pause") {
-          subscribe_media_state(
-            s.btn, s.icon_lbl,
-            media_play_pause_show_state(p) ? s.text_lbl : nullptr,
-            p.entity);
+          subscribe_media_state(s.btn, media_play_pause_show_state(p) ? s.text_lbl : nullptr, p.entity);
         } else if (media_playback_button_mode(mode)) {
           // Previous/next are momentary actions and do not reflect player state.
         } else if (mode == "volume") {
@@ -5730,7 +5755,8 @@ inline void grid_phase2(
           subscribe_media_volume_state(ctx);
           if (p.label.empty()) subscribe_friendly_name(s.text_lbl, p.entity);
         } else if (mode == "now_playing") {
-          subscribe_media_now_playing_state(s.sensor_lbl, s.text_lbl, p.entity);
+          lv_obj_t *title_lbl = (lv_obj_t *)lv_obj_get_user_data(s.sensor_container);
+          subscribe_media_now_playing_state(title_lbl ? title_lbl : s.sensor_lbl, s.text_lbl, p.entity);
         } else {
           lv_obj_t *slider = (lv_obj_t *)lv_obj_get_user_data(s.sensor_container);
           if (slider) subscribe_media_slider_state(s.btn, slider, p.entity);
@@ -6110,7 +6136,6 @@ inline void grid_phase2(
             }, LV_EVENT_CLICKED, ctx);
             if (mode == "play_pause")
               subscribe_media_state(sub_slot.btn,
-                sub_slot.icon_lbl,
                 media_play_pause_show_state(sb_cfg) ? sub_slot.text_lbl : nullptr,
                 sb_cfg.entity);
           } else if (mode == "volume") {
@@ -6131,7 +6156,8 @@ inline void grid_phase2(
               if (ctx) media_volume_open_modal(ctx);
             }, LV_EVENT_CLICKED, ctx);
           } else if (mode == "now_playing") {
-            subscribe_media_now_playing_state(sub_slot.sensor_lbl, sub_slot.text_lbl, sb_cfg.entity);
+            lv_obj_t *title_lbl = (lv_obj_t *)lv_obj_get_user_data(sub_slot.sensor_container);
+            subscribe_media_now_playing_state(title_lbl ? title_lbl : sub_slot.sensor_lbl, sub_slot.text_lbl, sb_cfg.entity);
           } else {
             lv_obj_t *media_slider = (lv_obj_t *)lv_obj_get_user_data(sub_slot.sensor_container);
             if (media_slider) subscribe_media_slider_state(sub_slot.btn, media_slider, sb_cfg.entity);
