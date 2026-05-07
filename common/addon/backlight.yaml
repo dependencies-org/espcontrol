@@ -112,14 +112,23 @@ script:
     then:
       - if:
           condition:
-            lambda: 'return id(clock_screensaver_enabled).state;'
+            lambda: 'return id(mp_state_sensor).has_state() && id(mp_state_sensor).state == "playing";'
           then:
             - globals.set:
                 id: display_asleep
                 value: 'true'
-            - script.execute: show_clock_view
+            - script.execute: mp_show_screensaver
           else:
-            - script.execute: screensaver_sleep_display_off
+            - if:
+                condition:
+                  lambda: 'return id(clock_screensaver_enabled).state;'
+                then:
+                  - globals.set:
+                      id: display_asleep
+                      value: 'true'
+                  - script.execute: show_clock_view
+                else:
+                  - script.execute: screensaver_sleep_display_off
 
   # Sensor mode honours the same clock/display-off setting as timer mode.
   - id: screensaver_sleep_sensor
@@ -379,32 +388,41 @@ script:
             - lvgl.resume:
             - if:
                 condition:
-                  lambda: 'return id(is_clock_showing);'
+                  lambda: 'return id(is_mp_screensaver_showing);'
                 then:
                   - globals.set:
                       id: display_asleep
                       value: 'false'
-                  - if:
-                      condition:
-                        lambda: 'return lv_scr_act() == id(screen_off_page)->obj;'
-                      then:
-                        - script.execute: navigate_after_api
                   - script.execute: backlight_apply_brightness
-                  - delay: 300ms
-                  - script.execute: hide_clock_view
                 else:
-                  - script.execute: hide_clock_view
-                  - delay: 100ms
                   - if:
                       condition:
-                        lambda: 'return lv_scr_act() == id(screen_off_page)->obj;'
+                        lambda: 'return id(is_clock_showing);'
                       then:
-                        - script.execute: navigate_after_api
-                  - delay: 50ms
-                  - globals.set:
-                      id: display_asleep
-                      value: 'false'
-                  - script.execute: backlight_apply_brightness
+                        - globals.set:
+                            id: display_asleep
+                            value: 'false'
+                        - if:
+                            condition:
+                              lambda: 'return lv_scr_act() == id(screen_off_page)->obj;'
+                            then:
+                              - script.execute: navigate_after_api
+                        - script.execute: backlight_apply_brightness
+                        - delay: 300ms
+                        - script.execute: hide_clock_view
+                      else:
+                        - script.execute: hide_clock_view
+                        - delay: 100ms
+                        - if:
+                            condition:
+                              lambda: 'return lv_scr_act() == id(screen_off_page)->obj;'
+                            then:
+                              - script.execute: navigate_after_api
+                        - delay: 50ms
+                        - globals.set:
+                            id: display_asleep
+                            value: 'false'
+                        - script.execute: backlight_apply_brightness
       - script.execute: screensaver_idle_check
       - script.execute: home_screen_idle_check
 

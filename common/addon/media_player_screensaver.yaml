@@ -1,0 +1,420 @@
+external_components:
+  - source: github://dependencies-org/esphome-media-player@main
+    components: [artwork_image]
+
+# ── Placeholder + artwork_image ───────────────────────────────────────────────
+image:
+  - file: "https://raw.githubusercontent.com/dependencies-org/esphome-media-player/main/common/assets/placeholder.png"
+    id: mp_art_placeholder
+    type: RGB565
+    byte_order: ${mp_image_byte_order}
+
+artwork_image:
+  - url: "https://placehold.co/${mp_artwork_size}x${mp_artwork_size}/2d2d2d/555555.jpg"
+    id: mp_album_art
+    format: AUTO
+    type: RGB565
+    byte_order: ${mp_image_byte_order}
+    placeholder: mp_art_placeholder
+    resize: ${mp_artwork_size}x${mp_artwork_size}
+    buffer_size: ${mp_artwork_buffer_size}
+    allow_insecure_local_urls: ${mp_allow_insecure_artwork}
+    on_download_finished:
+      - script.execute: mp_apply_artwork
+    on_error:
+      - script.execute: mp_handle_artwork_error
+
+# ── Globals ───────────────────────────────────────────────────────────────────
+globals:
+  - id: mp_ha_base_url
+    type: std::string
+    initial_value: '"${mp_ha_protocol}://${mp_ha_host}:${mp_ha_port}"'
+  - id: mp_last_artwork_url
+    type: std::string
+    initial_value: '""'
+  - id: is_mp_screensaver_showing
+    type: bool
+    initial_value: 'false'
+  - id: mp_artwork_retry_pending
+    type: bool
+    initial_value: 'false'
+  - id: mp_subscription_gen
+    type: int
+    initial_value: '0'
+  - id: mp_duration_secs
+    type: float
+    initial_value: '0.0'
+  - id: mp_position_secs
+    type: float
+    initial_value: '0.0'
+
+# ── Internal sensors (populated by dynamic HA subscriptions) ──────────────────
+text_sensor:
+  - platform: template
+    id: mp_state_sensor
+    internal: true
+    on_value:
+      - script.execute: mp_on_state_change
+
+  - platform: template
+    id: mp_title_sensor
+    internal: true
+    on_value:
+      - lvgl.label.update:
+          id: mp_track_label
+          text: !lambda 'return x.empty() ? std::string("—") : x;'
+
+  - platform: template
+    id: mp_artist_sensor
+    internal: true
+    on_value:
+      - if:
+          condition:
+            lambda: 'return !x.empty();'
+          then:
+            - lvgl.widget.show: mp_artist_label
+            - lvgl.label.update:
+                id: mp_artist_label
+                text: !lambda 'return x;'
+          else:
+            - lvgl.widget.hide: mp_artist_label
+
+  - platform: template
+    id: mp_picture_sensor
+    internal: true
+    on_value:
+      - script.execute: mp_fetch_artwork
+
+sensor:
+  - platform: template
+    id: mp_duration_sensor
+    internal: true
+    on_value:
+      - lambda: 'if (!std::isnan(x)) id(mp_duration_secs) = x;'
+
+  - platform: template
+    id: mp_position_sensor
+    internal: true
+    on_value:
+      - lambda: 'if (!std::isnan(x)) id(mp_position_secs) = x;'
+
+# ── Web UI entity selector ────────────────────────────────────────────────────
+text:
+  - platform: template
+    name: "Media Player Screensaver"
+    id: mp_entity_text
+    entity_category: config
+    icon: "mdi:cast-audio"
+    mode: text
+    optimistic: true
+    restore_value: true
+    initial_value: ""
+    min_length: 0
+    max_length: 100
+    web_server:
+      sorting_group_id: sg_screensaver
+    on_value:
+      - script.execute: mp_subscribe
+      - delay: 500ms
+      - if:
+          condition:
+            lambda: |-
+              const std::string &e = id(mp_entity_text).state;
+              return !e.empty()
+                  && e.size() >= 13
+                  && e.substr(0, 13) == "media_player."
+                  && esphome::api::global_api_server != nullptr
+                  && esphome::api::global_api_server->is_connected();
+          then:
+            - delay: 200ms
+            - lambda: 'App.safe_reboot();'
+
+# ── API: auto-detect HA base URL and subscribe on connect ─────────────────────
+api:
+  on_client_connected:
+    - lambda: |-
+        if (client_info.find("Home Assistant") == std::string::npos) return;
+        std::string protocol = "${mp_ha_protocol}";
+        std::string host = "${mp_ha_host}";
+        // Use the API client's IP for http so artwork fetching doesn't need mDNS.
+        // Keep the configured hostname for https (raw IPs won't match SSL certs).
+        if (protocol == "http" && host == "homeassistant.local") {
+          id(mp_ha_base_url) = "http://" + client_address + ":${mp_ha_port}";
+        } else {
+          id(mp_ha_base_url) = "${mp_ha_protocol}://${mp_ha_host}:${mp_ha_port}";
+        }
+        id(mp_subscribe).execute();
+
+# ── Progress bar tick (1 s) ───────────────────────────────────────────────────
+interval:
+  - interval: 1s
+    then:
+      - if:
+          condition:
+            lambda: 'return id(is_mp_screensaver_showing);'
+          then:
+            - lambda: |-
+                if (id(mp_state_sensor).has_state()
+                    && id(mp_state_sensor).state == "playing") {
+                  id(mp_position_secs) += 1.0f;
+                  float dur = id(mp_duration_secs);
+                  if (dur > 0.0f && id(mp_position_secs) > dur)
+                    id(mp_position_secs) = dur;
+                }
+            - lvgl.bar.update:
+                id: mp_progress_bar
+                value: !lambda |-
+                  float dur = id(mp_duration_secs);
+                  if (dur <= 0.0f) return 0;
+                  float pos = id(mp_position_secs);
+                  if (pos < 0.0f) pos = 0.0f;
+                  return (int)((pos / dur) * 100.0f);
+
+# ── Scripts ───────────────────────────────────────────────────────────────────
+script:
+
+  # Subscribe to all relevant attributes of the configured media player entity.
+  # Called once on API connect and again if the entity selector changes.
+  # Increments mp_subscription_gen so stale callbacks from previous subscriptions
+  # are silently discarded (same generation-counter pattern as button_grid.h).
+  - id: mp_subscribe
+    mode: single
+    then:
+      - lambda: |-
+          const std::string &entity = id(mp_entity_text).state;
+          if (entity.empty() || entity.size() < 13
+              || entity.substr(0, 13) != "media_player.") return;
+
+          id(mp_subscription_gen)++;
+          int gen = id(mp_subscription_gen);
+          auto *gen_ptr = &id(mp_subscription_gen);
+
+          auto *api = (esphome::api::APIServer *)esphome::api::global_api_server;
+          if (!api) return;
+
+          // Helper: wrap a text_sensor publish in a generation-guarded callback
+          auto text_cb = [gen, gen_ptr](esphome::text_sensor::TextSensor *s) {
+            return [gen, gen_ptr, s](esphome::StringRef v) {
+              if (gen != *gen_ptr) return;
+              s->publish_state(v.str());
+            };
+          };
+
+          // Helper: same but parses float for numeric sensors
+          auto num_cb = [gen, gen_ptr](esphome::sensor::Sensor *s) {
+            return [gen, gen_ptr, s](esphome::StringRef v) {
+              if (gen != *gen_ptr) return;
+              auto val = esphome::parse_number<float>(v.str());
+              if (val.has_value()) s->publish_state(*val);
+            };
+          };
+
+          // Entity state: "playing" / "paused" / "idle" / "unavailable"
+          api->subscribe_home_assistant_state(
+              entity, esphome::optional<std::string>(""),
+              text_cb(id(mp_state_sensor)));
+
+          api->subscribe_home_assistant_state(
+              entity, esphome::optional<std::string>("media_title"),
+              text_cb(id(mp_title_sensor)));
+
+          api->subscribe_home_assistant_state(
+              entity, esphome::optional<std::string>("media_artist"),
+              text_cb(id(mp_artist_sensor)));
+
+          api->subscribe_home_assistant_state(
+              entity, esphome::optional<std::string>("entity_picture"),
+              text_cb(id(mp_picture_sensor)));
+
+          api->subscribe_home_assistant_state(
+              entity, esphome::optional<std::string>("media_duration"),
+              num_cb(id(mp_duration_sensor)));
+
+          api->subscribe_home_assistant_state(
+              entity, esphome::optional<std::string>("media_position"),
+              num_cb(id(mp_position_sensor)));
+
+          ESP_LOGI("mp_screensaver", "Subscribed to %s", entity.c_str());
+
+  # React to media player state changes.
+  # Updates play/pause icon; hides screensaver when music fully stops.
+  - id: mp_on_state_change
+    mode: restart
+    then:
+      - if:
+          condition:
+            lambda: 'return id(mp_state_sensor).state == "playing";'
+          then:
+            - lvgl.widget.hide: mp_play_icon
+            - lvgl.widget.show: mp_pause_icon
+          else:
+            - lvgl.widget.show: mp_play_icon
+            - lvgl.widget.hide: mp_pause_icon
+      # When music stops entirely (not just paused) hide the screensaver
+      - if:
+          condition:
+            lambda: |-
+              const std::string &s = id(mp_state_sensor).state;
+              return id(is_mp_screensaver_showing)
+                  && s != "playing" && s != "paused";
+          then:
+            - script.execute: mp_exit_screensaver
+
+  # Trigger an artwork download when entity_picture changes.
+  # Skips the request if the URL hasn't changed since last fetch.
+  - id: mp_fetch_artwork
+    mode: restart
+    then:
+      - lambda: |-
+          const std::string &path = id(mp_picture_sensor).state;
+          if (path.empty()) return;
+          std::string url = id(mp_ha_base_url) + path;
+          if (url == id(mp_last_artwork_url)) return;
+          id(mp_last_artwork_url) = url;
+          ESP_LOGI("mp_screensaver", "Fetching artwork: %s", url.c_str());
+          id(mp_album_art)->set_url(url);
+          id(mp_album_art)->update();
+
+  # Update the LVGL image widget after a successful artwork download.
+  # Zooms and centres the image to fill mp_artwork_size × mp_artwork_size.
+  - id: mp_apply_artwork
+    mode: queued
+    then:
+      - lambda: 'id(mp_artwork_retry_pending) = false;'
+      - lambda: |-
+          auto *img = id(mp_album_art);
+          int iw = img->get_width();
+          int ih = img->get_height();
+          auto *w = id(mp_album_art_widget);
+          int display_size = ${mp_artwork_size};
+          int dim = (iw < ih) ? iw : ih;
+          if (dim > 0 && dim < display_size) {
+            int zoom = (256 * display_size + dim - 1) / dim;
+            lv_img_set_zoom(w, zoom);
+            lv_img_set_offset_x(w, 0);
+            lv_img_set_offset_y(w, 0);
+            lv_obj_set_size(w, iw, ih);
+            int offset = (display_size - dim) / 2;
+            lv_obj_set_pos(w, offset, offset);
+          } else {
+            lv_img_set_zoom(w, 256);
+            lv_img_set_offset_x(w, 0);
+            lv_img_set_offset_y(w, 0);
+            lv_obj_set_size(w, iw, ih);
+            lv_obj_set_pos(w, (display_size - iw) / 2, (display_size - ih) / 2);
+          }
+      - lvgl.image.update:
+          id: mp_album_art_widget
+          src: mp_album_art
+      - lvgl.widget.update:
+          id: mp_album_art_widget
+          opa: 100%
+
+  # Retry artwork download once after a 1 s delay.
+  - id: mp_handle_artwork_error
+    mode: restart
+    then:
+      - lambda: |-
+          ESP_LOGW("mp_screensaver", "Artwork download failed: %s",
+                   id(mp_last_artwork_url).c_str());
+      - lvgl.widget.update:
+          id: mp_album_art_widget
+          opa: 0%
+      - if:
+          condition:
+            lambda: 'return !id(mp_artwork_retry_pending);'
+          then:
+            - lambda: 'id(mp_artwork_retry_pending) = true;'
+            - delay: 1s
+            - lambda: |-
+                if (!id(mp_last_artwork_url).empty()) {
+                  id(mp_album_art)->set_url(id(mp_last_artwork_url));
+                  id(mp_album_art)->update();
+                }
+          else:
+            - lambda: |-
+                id(mp_artwork_retry_pending) = false;
+                ESP_LOGW("mp_screensaver", "Artwork retry also failed");
+
+  # Show the media player screensaver overlay.
+  # Re-uses the clock screensaver brightness level (day/night aware).
+  - id: mp_show_screensaver
+    mode: single
+    then:
+      - lambda: 'id(is_mp_screensaver_showing) = true;'
+      - script.execute: clock_screensaver_refresh_brightness
+      - script.wait: clock_screensaver_refresh_brightness
+      - script.execute: backlight_fade_current_ui_to_black
+      - script.wait: backlight_fade_current_ui_to_black
+      - lvgl.widget.show: media_player_screensaver
+      - lvgl.widget.hide: clock_screensaver
+      - lvgl.widget.hide: display_time
+      - lvgl.widget.hide: temperatures
+      - output.set_level:
+          id: gpio_backlight_pwm
+          level: 0%
+      - delay: 50ms
+      - output.set_level:
+          id: gpio_backlight_pwm
+          level: !lambda 'return id(screensaver_clock_target_level) * 0.20f;'
+      - delay: 50ms
+      - output.set_level:
+          id: gpio_backlight_pwm
+          level: !lambda 'return id(screensaver_clock_target_level) * 0.40f;'
+      - delay: 50ms
+      - output.set_level:
+          id: gpio_backlight_pwm
+          level: !lambda 'return id(screensaver_clock_target_level) * 0.60f;'
+      - delay: 50ms
+      - output.set_level:
+          id: gpio_backlight_pwm
+          level: !lambda 'return id(screensaver_clock_target_level) * 0.80f;'
+      - delay: 50ms
+      - output.set_level:
+          id: gpio_backlight_pwm
+          level: !lambda 'return id(screensaver_clock_target_level);'
+      - delay: 50ms
+      - light.turn_on:
+          id: display_backlight
+          brightness: !lambda 'return id(screensaver_clock_target_level);'
+          transition_length: 0s
+
+  # Hide the media player screensaver overlay (internal helper).
+  - id: mp_hide_screensaver
+    mode: single
+    then:
+      - lambda: 'id(is_mp_screensaver_showing) = false;'
+      - lvgl.widget.hide: media_player_screensaver
+
+  # Home button handler: dismisses the overlay and returns to the main page.
+  - id: mp_exit_screensaver
+    mode: single
+    then:
+      - script.execute: mp_hide_screensaver
+      - script.wait: mp_hide_screensaver
+      - if:
+          condition:
+            switch.is_on: clock_bar_enabled
+          then:
+            - lvgl.widget.show: display_time
+      - if:
+          condition:
+            or:
+              - switch.is_on: indoor_temp_enable
+              - switch.is_on: outdoor_temp_enable
+          then:
+            - lvgl.widget.show: temperatures
+      - lambda: |-
+          if (lv_scr_act() != id(main_page)->obj) {
+            lv_scr_load_anim(id(main_page)->obj,
+                             LV_SCR_LOAD_ANIM_NONE, 0, 0, false);
+          }
+      - globals.set:
+          id: display_asleep
+          value: 'false'
+      - globals.set:
+          id: screensaver_display_off_active
+          value: 'false'
+      - script.execute: backlight_apply_brightness
+      - script.execute: screensaver_idle_check
+      - script.execute: home_screen_idle_check

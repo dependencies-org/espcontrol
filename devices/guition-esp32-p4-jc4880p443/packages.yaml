@@ -31,6 +31,15 @@ substitutions:
   clock_font_size: "160"
   clock_cx: "240"
   clock_cy: "400"
+  # Media player screensaver
+  mp_ha_protocol: "http"
+  mp_ha_host: "homeassistant.local"
+  mp_ha_port: "8123"
+  mp_allow_insecure_artwork: "true"
+  mp_image_byte_order: "little_endian"
+  mp_artwork_size: "480"
+  mp_artwork_buffer_size: "65536"
+  mp_label_width: "432"
 
 packages:
   # ---------------------------------------------------------------------------
@@ -76,7 +85,9 @@ packages:
   screen_ha:       !include ../../common/device/screen_ha_setup.yaml
   screen_ha_act:   !include ../../common/device/screen_ha_actions.yaml
   screen_setup:    !include ../../common/device/screen_button_setup.yaml
-  screen_clock:    !include ../../common/device/screen_clock.yaml
+  screen_clock:          !include ../../common/device/screen_clock.yaml
+  screen_media_player:   !include ../../common/device/screen_media_player.yaml
+  media_player_ss:       !include ../../common/addon/media_player_screensaver.yaml
   # ---------------------------------------------------------------------------
   # Main page and dynamic sensor subscriptions (after setup screens)
   # ---------------------------------------------------------------------------

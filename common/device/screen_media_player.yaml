@@ -1,0 +1,212 @@
+font:
+  # Track title — Roboto Light 40px, broad Latin + Hebrew coverage
+  - file: "gfonts://Roboto@300"
+    id: mp_title_font
+    size: 40
+    bpp: 4
+    glyphs: !include ../assets/text_glyphs.yaml
+    extras:
+      - file: "gfonts://Heebo@Light"
+        glyphs: !include ../assets/hebrew_glyphs.yaml
+
+  # Artist name — Roboto Regular 24px
+  - file: "gfonts://Roboto"
+    id: mp_artist_font
+    size: 24
+    bpp: 4
+    glyphs: !include ../assets/text_glyphs.yaml
+    extras:
+      - file: "gfonts://Heebo"
+        glyphs: !include ../assets/hebrew_glyphs.yaml
+
+lvgl:
+  top_layer:
+    widgets:
+      - obj:
+          id: media_player_screensaver
+          x: 0
+          y: 0
+          width: ${screen_width}
+          height: ${screen_height}
+          bg_color: 0x000000
+          bg_opa: 100%
+          radius: 0
+          border_width: 0
+          pad_all: 0
+          scrollable: false
+          scrollbar_mode: "off"
+          clickable: true
+          hidden: true
+
+          widgets:
+            # ── Album art ────────────────────────────────────────────────────
+            # Square, top-anchored. Sized and repositioned by mp_apply_artwork.
+            - image:
+                id: mp_album_art_widget
+                x: 0
+                y: 0
+                width: ${mp_artwork_size}
+                height: ${mp_artwork_size}
+                src: mp_album_art
+                opa: 100%
+
+            # ── Dark scrim ───────────────────────────────────────────────────
+            # Full-screen semi-transparent layer so text stays readable over art
+            - obj:
+                x: 0
+                y: 0
+                width: ${screen_width}
+                height: ${screen_height}
+                bg_color: 0x000000
+                bg_opa: 65%
+                radius: 0
+                border_width: 0
+                pad_all: 0
+                clickable: false
+                scrollable: false
+                scrollbar_mode: "off"
+
+            # ── Home button (top-right) ──────────────────────────────────────
+            - button:
+                id: mp_home_button
+                align: top_right
+                x: -12
+                y: 12
+                width: 52
+                height: 52
+                bg_opa: 0%
+                border_width: 0
+                on_press:
+                  - script.execute: mp_exit_screensaver
+                widgets:
+                  - label:
+                      text_font: ${icon_font}
+                      align: center
+                      text: "\U000F02DC"  # mdi-home
+                      text_color: 0xFFFFFF
+                      text_opa: 80%
+
+            # ── Track title (bottom area, above controls) ────────────────────
+            - label:
+                id: mp_track_label
+                align: bottom_left
+                x: 24
+                y: -116
+                width: ${mp_label_width}
+                long_mode: dot
+                text: "—"
+                text_font: mp_title_font
+                text_color: 0xFFFFFF
+                text_align: left
+
+            # ── Artist name (below title) ────────────────────────────────────
+            - label:
+                id: mp_artist_label
+                align: bottom_left
+                x: 24
+                y: -72
+                width: ${mp_label_width}
+                long_mode: dot
+                text: ""
+                text_font: mp_artist_font
+                text_color: 0xFFFFFF
+                text_opa: 80%
+                text_align: left
+                hidden: true
+
+            # ── Previous track ───────────────────────────────────────────────
+            - button:
+                id: mp_prev_button
+                align: bottom_mid
+                x: -96
+                y: -20
+                width: 52
+                height: 52
+                bg_opa: 0%
+                border_width: 0
+                on_press:
+                  - homeassistant.service:
+                      service: media_player.media_previous_track
+                      variables:
+                        entity_id: !lambda 'return id(mp_entity_text).state;'
+                      data_template:
+                        entity_id: "{{ entity_id }}"
+                widgets:
+                  - label:
+                      text_font: ${icon_font}
+                      align: center
+                      text: "\U000F04AE"  # mdi-skip-previous
+                      text_color: 0xFFFFFF
+
+            # ── Play / pause (slightly larger) ───────────────────────────────
+            - button:
+                id: mp_play_pause_button
+                align: bottom_mid
+                x: 0
+                y: -16
+                width: 60
+                height: 60
+                bg_opa: 0%
+                border_width: 0
+                on_press:
+                  - homeassistant.service:
+                      service: media_player.media_play_pause
+                      variables:
+                        entity_id: !lambda 'return id(mp_entity_text).state;'
+                      data_template:
+                        entity_id: "{{ entity_id }}"
+                widgets:
+                  - label:
+                      id: mp_play_icon
+                      text_font: ${icon_font}
+                      align: center
+                      text: "\U000F040A"  # mdi-play
+                      text_color: 0xFFFFFF
+                  - label:
+                      id: mp_pause_icon
+                      text_font: ${icon_font}
+                      align: center
+                      text: "\U000F03E4"  # mdi-pause
+                      text_color: 0xFFFFFF
+                      hidden: true
+
+            # ── Next track ───────────────────────────────────────────────────
+            - button:
+                id: mp_next_button
+                align: bottom_mid
+                x: 96
+                y: -20
+                width: 52
+                height: 52
+                bg_opa: 0%
+                border_width: 0
+                on_press:
+                  - homeassistant.service:
+                      service: media_player.media_next_track
+                      variables:
+                        entity_id: !lambda 'return id(mp_entity_text).state;'
+                      data_template:
+                        entity_id: "{{ entity_id }}"
+                widgets:
+                  - label:
+                      text_font: ${icon_font}
+                      align: center
+                      text: "\U000F04AD"  # mdi-skip-next
+                      text_color: 0xFFFFFF
+
+            # ── Progress bar (4px strip at very bottom) ──────────────────────
+            - bar:
+                id: mp_progress_bar
+                align: bottom_mid
+                y: 0
+                width: ${screen_width}
+                height: 4
+                bg_color: 0x000000
+                bg_opa: 50%
+                radius: 0
+                min_value: 0
+                max_value: 100
+                value: 0
+                indicator:
+                  bg_color: 0xFFFFFF
+                  radius: 0
