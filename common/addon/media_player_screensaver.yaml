@@ -258,6 +258,7 @@ script:
               return id(is_mp_screensaver_showing)
                   && s != "playing" && s != "paused";
           then:
+            - delay: 3s
             - script.execute: mp_exit_screensaver
 
   # Trigger an artwork download when entity_picture changes.
@@ -268,7 +269,7 @@ script:
       - lambda: |-
           const std::string &path = id(mp_picture_sensor).state;
           if (path.empty()) return;
-          bool absolute = path.size() >= 7 && (path.substr(0, 7) == "http://" || path.substr(0, 8) == "https://");
+          bool absolute = path.rfind("http://", 0) == 0 || path.rfind("https://", 0) == 0;
           std::string url = absolute ? path : id(mp_ha_base_url) + path;
           if (url == id(mp_last_artwork_url)) return;
           id(mp_last_artwork_url) = url;
