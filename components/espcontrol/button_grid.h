@@ -4204,7 +4204,7 @@ inline void media_volume_grid_card_rect(lv_coord_t sw, lv_coord_t sh,
   if (metrics.first_card) {
     lv_area_t card_area;
     lv_obj_get_coords(metrics.first_card, &card_area);
-    x = 10;
+    x = 5;
     y = card_area.y1;
     w = lv_obj_get_width(metrics.first_card) * span_cols + gap_col * (span_cols - 1);
     h = lv_obj_get_height(metrics.first_card) * span_rows + gap_row * (span_rows - 1);
@@ -4217,7 +4217,7 @@ inline void media_volume_grid_card_rect(lv_coord_t sw, lv_coord_t sh,
   lv_coord_t cell_h = usable_h > 0 ? usable_h / rows : h;
   w = cell_w * span_cols + gap_col * (span_cols - 1);
   h = cell_h * span_rows + gap_row * (span_rows - 1);
-  x = 10;
+  x = 5;
   y = pad_top;
 }
 
@@ -4228,8 +4228,10 @@ inline void media_volume_layout_modal(MediaVolumeCtx *ctx) {
   lv_coord_t sw = disp ? lv_disp_get_hor_res(disp) : 480;
   lv_coord_t sh = disp ? lv_disp_get_ver_res(disp) : 480;
   lv_coord_t short_side = sw < sh ? sw : sh;
-  lv_coord_t panel_x, panel_y, panel_w, panel_h;
-  media_volume_grid_card_rect(sw, sh, panel_x, panel_y, panel_w, panel_h);
+  lv_coord_t panel_x = 0;
+  lv_coord_t panel_y = 0;
+  lv_coord_t panel_w = sw;
+  lv_coord_t panel_h = sh;
   int width_percent = normalize_width_compensation_percent(ctx->width_compensation_percent);
   lv_coord_t min_side = panel_w < panel_h ? panel_w : panel_h;
   lv_coord_t back_size = min_side * 22 / 100;
@@ -4333,6 +4335,10 @@ inline void media_volume_open_modal(MediaVolumeCtx *ctx) {
 
   ui.back_btn = media_volume_create_round_button(ui.panel, 32, "\U000F0141",
     ctx->icon_font, 0x454545, 0x252525, ctx->width_compensation_percent);
+  lv_obj_set_style_bg_opa(ui.back_btn, LV_OPA_TRANSP, LV_PART_MAIN);
+  lv_obj_set_style_border_width(ui.back_btn, 0, LV_PART_MAIN);
+  lv_obj_t *back_label = lv_obj_get_child(ui.back_btn, 0);
+  if (back_label) lv_obj_set_style_text_color(back_label, lv_color_hex(0x000000), LV_PART_MAIN);
   lv_obj_add_event_cb(ui.back_btn, [](lv_event_t *) {
     media_volume_hide_modal();
   }, LV_EVENT_CLICKED, nullptr);
