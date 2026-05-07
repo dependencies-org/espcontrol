@@ -51,7 +51,7 @@ wifi:
 
 packages:
   setup:
-    url: https://github.com/jtenniswood/espcontrol/
+    url: https://github.com/dependencies-org/espcontrol/
     file: devices/guition-esp32-p4-jc1060p470/packages.yaml
     refresh: 1d
 ```
@@ -84,7 +84,7 @@ substitutions:
 
 packages:
   setup:
-    url: https://github.com/jtenniswood/espcontrol/
+    url: https://github.com/dependencies-org/espcontrol/
     file: devices/esp32-p4-86/packages.yaml
     refresh: 1d
 ```
