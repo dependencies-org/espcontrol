@@ -134,6 +134,7 @@ api:
   on_client_connected:
     - lambda: |-
         if (client_info.find("Home Assistant") == std::string::npos) return;
+        ESP_LOGI("mp_screensaver", "=== mp_screensaver build: " __DATE__ " " __TIME__ " ===");
         std::string protocol = "${mp_ha_protocol}";
         std::string host = "${mp_ha_host}";
         // Use the API client's IP for http so artwork fetching doesn't need mDNS.
@@ -143,6 +144,7 @@ api:
         } else {
           id(mp_ha_base_url) = "${mp_ha_protocol}://${mp_ha_host}:${mp_ha_port}";
         }
+        ESP_LOGI("mp_screensaver", "ha_base_url='%s'", id(mp_ha_base_url).c_str());
         id(mp_subscribe).execute();
 
 # ── Progress bar tick (1 s) ───────────────────────────────────────────────────
@@ -269,7 +271,14 @@ script:
       - lambda: |-
           const std::string &path = id(mp_picture_sensor).state;
           if (path.empty()) return;
+          ESP_LOGI("mp_screensaver", "picture path len=%d b0=0x%02x b1=0x%02x b2=0x%02x val='%.40s'",
+                   (int)path.size(),
+                   path.size() > 0 ? (unsigned char)path[0] : 0,
+                   path.size() > 1 ? (unsigned char)path[1] : 0,
+                   path.size() > 2 ? (unsigned char)path[2] : 0,
+                   path.c_str());
           bool absolute = path.rfind("http://", 0) == 0 || path.rfind("https://", 0) == 0;
+          ESP_LOGI("mp_screensaver", "absolute=%d", (int)absolute);
           std::string url = absolute ? path : id(mp_ha_base_url) + path;
           if (url == id(mp_last_artwork_url)) return;
           id(mp_last_artwork_url) = url;
