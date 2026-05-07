@@ -268,7 +268,8 @@ script:
       - lambda: |-
           const std::string &path = id(mp_picture_sensor).state;
           if (path.empty()) return;
-          std::string url = id(mp_ha_base_url) + path;
+          bool absolute = path.size() >= 7 && (path.substr(0, 7) == "http://" || path.substr(0, 8) == "https://");
+          std::string url = absolute ? path : id(mp_ha_base_url) + path;
           if (url == id(mp_last_artwork_url)) return;
           id(mp_last_artwork_url) = url;
           ESP_LOGI("mp_screensaver", "Fetching artwork: %s", url.c_str());
