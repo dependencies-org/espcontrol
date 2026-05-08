@@ -63,6 +63,11 @@ text_sensor:
       - lvgl.label.update:
           id: mp_track_label
           text: !lambda 'return x.empty() ? std::string("—") : x;'
+      - if:
+          condition:
+            lambda: 'return !x.empty();'
+          then:
+            - script.execute: mp_on_track_change
 
   - platform: template
     id: mp_artist_sensor
@@ -281,7 +286,8 @@ script:
           else:
             - lvgl.widget.show: mp_play_icon
             - lvgl.widget.hide: mp_pause_icon
-      # When music stops entirely (not just paused) hide the screensaver.
+      # When music stops entirely (not just paused) hand off to the normal
+      # screensaver (clock or display-off) rather than returning to the main page.
       # 10 s cooldown so track transitions (which briefly look like "stopped")
       # don't dismiss the overlay before the next track starts playing.
       - if:
@@ -292,7 +298,9 @@ script:
                   && s != "playing" && s != "paused";
           then:
             - delay: 10s
-            - script.execute: mp_exit_screensaver
+            - script.execute: mp_hide_screensaver
+            - script.wait: mp_hide_screensaver
+            - script.execute: screensaver_sleep_timer
 
   # Trigger an artwork download when entity_picture changes.
   # Skips the request if the URL hasn't changed since last fetch.
@@ -352,23 +360,36 @@ script:
           id: mp_album_art_widget
           opa: 100%
 
-  # Called when the user skips a track from the display.
-  # Immediately resets the progress bar and the artwork URL cache so the
-  # next entity_picture subscription update always triggers a fresh fetch.
-  # After 1.5 s (enough time for HA to process the skip and push new state)
-  # it also force-fetches artwork in case entity_picture did not change.
+  # Fired by mp_title_sensor.on_value whenever a new (non-empty) track title
+  # arrives — covers skips from both Home Assistant and the display.
+  # Resets the progress bar immediately, then after 500 ms (enough time for HA
+  # to push the updated entity_picture) clears the URL cache and force-fetches
+  # fresh artwork even if entity_picture did not change.
+  - id: mp_on_track_change
+    mode: restart
+    then:
+      - lambda: |-
+          id(mp_position_secs) = 0.0f;
+          id(mp_duration_secs) = 0.0f;
+      - lvgl.bar.update:
+          id: mp_progress_bar
+          value: 0
+      - delay: 500ms
+      - lambda: 'id(mp_last_artwork_url) = "";'
+      - script.execute: mp_fetch_artwork
+
+  # Called when the user presses prev/next on the display.
+  # Resets the progress bar immediately for instant visual feedback;
+  # artwork refresh is handled by mp_on_track_change once the title arrives.
   - id: mp_on_skip
     mode: restart
     then:
       - lambda: |-
           id(mp_position_secs) = 0.0f;
           id(mp_duration_secs) = 0.0f;
-          id(mp_last_artwork_url) = "";
       - lvgl.bar.update:
           id: mp_progress_bar
           value: 0
-      - delay: 1500ms
-      - script.execute: mp_fetch_artwork
 
   # Retry artwork download once after a 1 s delay.
   - id: mp_handle_artwork_error
