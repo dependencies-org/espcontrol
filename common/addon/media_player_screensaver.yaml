@@ -83,7 +83,15 @@ text_sensor:
     id: mp_picture_sensor
     internal: true
     on_value:
-      - script.execute: mp_fetch_artwork
+      - if:
+          condition:
+            lambda: 'return x.empty();'
+          then:
+            # Clear the cached URL so the next non-empty picture always re-fetches,
+            # even if the URL matches what was shown before the track transition.
+            - lambda: 'id(mp_last_artwork_url) = "";'
+          else:
+            - script.execute: mp_fetch_artwork
 
 sensor:
   - platform: template
@@ -239,7 +247,8 @@ script:
           ESP_LOGI("mp_screensaver", "Subscribed to %s", entity.c_str());
 
   # React to media player state changes.
-  # Updates play/pause icon; hides screensaver when music fully stops.
+  # Shows the overlay proactively when playback starts (even if the idle timer
+  # has not fired yet, or the screen is off). Hides it when music fully stops.
   - id: mp_on_state_change
     mode: restart
     then:
@@ -249,10 +258,32 @@ script:
           then:
             - lvgl.widget.hide: mp_play_icon
             - lvgl.widget.show: mp_pause_icon
+            # Bring up the overlay as soon as playback starts if it isn't visible.
+            - if:
+                condition:
+                  lambda: 'return !id(is_mp_screensaver_showing);'
+                then:
+                  # If the display was completely off LVGL is paused; resume it
+                  # before any widget operations.
+                  - if:
+                      condition:
+                        lambda: 'return id(screensaver_display_off_active);'
+                      then:
+                        - globals.set:
+                            id: screensaver_display_off_active
+                            value: 'false'
+                        - lvgl.resume:
+                  - script.stop: screensaver_idle_check
+                  - globals.set:
+                      id: display_asleep
+                      value: 'true'
+                  - script.execute: mp_show_screensaver
           else:
             - lvgl.widget.show: mp_play_icon
             - lvgl.widget.hide: mp_pause_icon
-      # When music stops entirely (not just paused) hide the screensaver
+      # When music stops entirely (not just paused) hide the screensaver.
+      # 10 s cooldown so track transitions (which briefly look like "stopped")
+      # don't dismiss the overlay before the next track starts playing.
       - if:
           condition:
             lambda: |-
@@ -260,7 +291,7 @@ script:
               return id(is_mp_screensaver_showing)
                   && s != "playing" && s != "paused";
           then:
-            - delay: 3s
+            - delay: 10s
             - script.execute: mp_exit_screensaver
 
   # Trigger an artwork download when entity_picture changes.
@@ -320,6 +351,24 @@ script:
       - lvgl.widget.update:
           id: mp_album_art_widget
           opa: 100%
+
+  # Called when the user skips a track from the display.
+  # Immediately resets the progress bar and the artwork URL cache so the
+  # next entity_picture subscription update always triggers a fresh fetch.
+  # After 1.5 s (enough time for HA to process the skip and push new state)
+  # it also force-fetches artwork in case entity_picture did not change.
+  - id: mp_on_skip
+    mode: restart
+    then:
+      - lambda: |-
+          id(mp_position_secs) = 0.0f;
+          id(mp_duration_secs) = 0.0f;
+          id(mp_last_artwork_url) = "";
+      - lvgl.bar.update:
+          id: mp_progress_bar
+          value: 0
+      - delay: 1500ms
+      - script.execute: mp_fetch_artwork
 
   # Retry artwork download once after a 1 s delay.
   - id: mp_handle_artwork_error

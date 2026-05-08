@@ -125,6 +125,7 @@ lvgl:
                 bg_opa: 0%
                 border_width: 0
                 on_press:
+                  - script.execute: mp_on_skip
                   - homeassistant.service:
                       service: media_player.media_previous_track
                       variables:
@@ -181,6 +182,7 @@ lvgl:
                 bg_opa: 0%
                 border_width: 0
                 on_press:
+                  - script.execute: mp_on_skip
                   - homeassistant.service:
                       service: media_player.media_next_track
                       variables:
