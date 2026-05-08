@@ -41,12 +41,12 @@ globals:
   - id: mp_subscription_gen
     type: int
     initial_value: '0'
-  - id: mp_duration_secs
-    type: float
-    initial_value: '0.0'
-  - id: mp_position_secs
-    type: float
-    initial_value: '0.0'
+  - id: mp_volume_pct
+    type: int
+    initial_value: '0'
+  - id: mp_vol_ctx_ptr
+    type: void*
+    initial_value: 'nullptr'
 
 # ── Internal sensors (populated by dynamic HA subscriptions) ──────────────────
 text_sensor:
@@ -98,19 +98,6 @@ text_sensor:
           else:
             - script.execute: mp_fetch_artwork
 
-sensor:
-  - platform: template
-    id: mp_duration_sensor
-    internal: true
-    on_value:
-      - lambda: 'if (!std::isnan(x)) id(mp_duration_secs) = x;'
-
-  - platform: template
-    id: mp_position_sensor
-    internal: true
-    on_value:
-      - lambda: 'if (!std::isnan(x)) id(mp_position_secs) = x;'
-
 # ── Web UI entity selector ────────────────────────────────────────────────────
 text:
   - platform: template
@@ -159,31 +146,6 @@ api:
         }
         ESP_LOGI("mp_screensaver", "ha_base_url='%s'", id(mp_ha_base_url).c_str());
         id(mp_subscribe).execute();
-
-# ── Progress bar tick (1 s) ───────────────────────────────────────────────────
-interval:
-  - interval: 1s
-    then:
-      - if:
-          condition:
-            lambda: 'return id(is_mp_screensaver_showing);'
-          then:
-            - lambda: |-
-                if (id(mp_state_sensor).has_state()
-                    && id(mp_state_sensor).state == "playing") {
-                  id(mp_position_secs) += 1.0f;
-                  float dur = id(mp_duration_secs);
-                  if (dur > 0.0f && id(mp_position_secs) > dur)
-                    id(mp_position_secs) = dur;
-                }
-            - lvgl.bar.update:
-                id: mp_progress_bar
-                value: !lambda |-
-                  float dur = id(mp_duration_secs);
-                  if (dur <= 0.0f) return 0;
-                  float pos = id(mp_position_secs);
-                  if (pos < 0.0f) pos = 0.0f;
-                  return (int)((pos / dur) * 100.0f);
 
 # ── Scripts ───────────────────────────────────────────────────────────────────
 script:
@@ -242,12 +204,18 @@ script:
               text_cb(id(mp_picture_sensor)));
 
           api->subscribe_home_assistant_state(
-              entity, esphome::optional<std::string>("media_duration"),
-              num_cb(id(mp_duration_sensor)));
-
-          api->subscribe_home_assistant_state(
-              entity, esphome::optional<std::string>("media_position"),
-              num_cb(id(mp_position_sensor)));
+              entity, esphome::optional<std::string>("volume_level"),
+              [gen, gen_ptr](esphome::StringRef v) {
+                if (gen != *gen_ptr) return;
+                auto val = esphome::parse_number<float>(v.str());
+                if (!val.has_value()) return;
+                int pct = (int)(val.value() * 100.0f + 0.5f);
+                if (pct < 0) pct = 0;
+                if (pct > 100) pct = 100;
+                id(mp_volume_pct) = pct;
+                if (id(mp_vol_ctx_ptr))
+                  ((MediaVolumeCtx *)id(mp_vol_ctx_ptr))->current_pct = pct;
+              });
 
           ESP_LOGI("mp_screensaver", "Subscribed to %s", entity.c_str());
 
@@ -361,35 +329,15 @@ script:
           opa: 100%
 
   # Fired by mp_title_sensor.on_value whenever a new (non-empty) track title
-  # arrives — covers skips from both Home Assistant and the display.
-  # Resets the progress bar immediately, then after 500 ms (enough time for HA
-  # to push the updated entity_picture) clears the URL cache and force-fetches
-  # fresh artwork even if entity_picture did not change.
+  # arrives. Waits 500 ms (enough time for HA to push the updated entity_picture)
+  # then clears the URL cache and force-fetches fresh artwork even if
+  # entity_picture did not change.
   - id: mp_on_track_change
     mode: restart
     then:
-      - lambda: |-
-          id(mp_position_secs) = 0.0f;
-          id(mp_duration_secs) = 0.0f;
-      - lvgl.bar.update:
-          id: mp_progress_bar
-          value: 0
       - delay: 500ms
       - lambda: 'id(mp_last_artwork_url) = "";'
       - script.execute: mp_fetch_artwork
-
-  # Called when the user presses prev/next on the display.
-  # Resets the progress bar immediately for instant visual feedback;
-  # artwork refresh is handled by mp_on_track_change once the title arrives.
-  - id: mp_on_skip
-    mode: restart
-    then:
-      - lambda: |-
-          id(mp_position_secs) = 0.0f;
-          id(mp_duration_secs) = 0.0f;
-      - lvgl.bar.update:
-          id: mp_progress_bar
-          value: 0
 
   # Retry artwork download once after a 1 s delay.
   - id: mp_handle_artwork_error
@@ -499,3 +447,25 @@ script:
       - script.execute: backlight_apply_brightness
       - script.execute: screensaver_idle_check
       - script.execute: home_screen_idle_check
+
+  # Open the volume modal over the screensaver.
+  # Allocates the MediaVolumeCtx once and reuses it on subsequent opens.
+  - id: mp_open_volume_modal
+    mode: single
+    then:
+      - lambda: |-
+          const std::string &entity = id(mp_entity_text).state;
+          if (entity.empty()) return;
+          if (!id(mp_vol_ctx_ptr)) {
+            auto *ctx = new MediaVolumeCtx();
+            ctx->number_font = id(volume_modal_number_font)->get_lv_font();
+            ctx->label_font  = id(${label_font})->get_lv_font();
+            ctx->icon_font   = id(${icon_font})->get_lv_font();
+            ctx->accent_color   = 0xFFFFFF;
+            ctx->tertiary_color = 0x1a1a1a;
+            id(mp_vol_ctx_ptr) = ctx;
+          }
+          auto *ctx = (MediaVolumeCtx *)id(mp_vol_ctx_ptr);
+          ctx->entity_id   = entity;
+          ctx->current_pct = id(mp_volume_pct);
+          media_volume_open_modal(ctx);
