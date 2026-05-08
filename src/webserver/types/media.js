@@ -1,7 +1,19 @@
 // Media player card: playback buttons, volume, track position, or now-playing details.
+function mediaEditorMode(value) {
+  if (value === "controls") return "play_pause";
+  if (value === "previous" || value === "next" || value === "volume" ||
+      value === "position" || value === "now_playing" || value === "play_pause") {
+    return value;
+  }
+  return "play_pause";
+}
+
+function mediaEditorValidMode(value) {
+  return mediaEditorMode(value);
+}
+
 registerButtonType("media", {
   label: "Media",
-  experimental: "media",
   allowInSubpage: true,
   hideLabel: true,
   labelPlaceholder: "e.g. Living Room Speaker",
@@ -24,15 +36,11 @@ registerButtonType("media", {
     ];
 
     function validMode(value) {
-      if (value === "controls") return "play_pause";
-      for (var i = 0; i < modes.length; i++) {
-        if (modes[i][0] === value) return value;
-      }
-      return "play_pause";
+      return mediaEditorValidMode(value);
     }
 
     function mediaDefaultIcon(value) {
-      var mode = validMode(value);
+      var mode = mediaEditorMode(value);
       if (mode === "previous") return "Skip Previous";
       if (mode === "next") return "Skip Next";
       if (mode === "volume") return "Volume High";
@@ -48,7 +56,7 @@ registerButtonType("media", {
     }
 
     function mediaActionLabel(value) {
-      var mode = validMode(value);
+      var mode = mediaEditorMode(value);
       if (mode === "previous") return "Previous";
       if (mode === "next") return "Next";
       if (mode === "volume") return "Volume";
@@ -107,10 +115,7 @@ registerButtonType("media", {
   },
   renderSettings: function (panel, b, slot, helpers) {
     function validMode(value) {
-      if (value === "controls") return "play_pause";
-      if (value === "previous" || value === "next" || value === "volume" ||
-          value === "position" || value === "now_playing") return value;
-      return "play_pause";
+      return mediaEditorValidMode(value);
     }
 
     b.sensor = validMode(b.sensor);
@@ -199,7 +204,7 @@ registerButtonType("media", {
       var labelInp = helpers.textInput(
         helpers.idPrefix + "label",
         b.label,
-        b.sensor === "position" ? "Track" : "e.g. Living Room Speaker"
+        b.sensor === "position" ? "Position" : "e.g. Living Room Speaker"
       );
       lf.appendChild(labelInp);
       panel.appendChild(lf);
@@ -223,19 +228,18 @@ registerButtonType("media", {
       if (value === "previous") return { mode: "previous", label: "Previous", icon: "skip-previous" };
       if (value === "next") return { mode: "next", label: "Next", icon: "skip-next" };
       if (value === "volume") return { mode: "volume", label: "Volume", icon: "volume-high" };
-      if (value === "position") return { mode: "position", label: "Track", icon: "progress-clock" };
+      if (value === "position") return { mode: "position", label: "Position", icon: "progress-clock" };
       if (value === "now_playing") return { mode: "now_playing", label: "Now Playing", icon: "music" };
       return { mode: "play_pause", label: "Play/Pause", icon: "play-pause" };
     }
-    var info = modeInfo(b.sensor);
+    var info = modeInfo(mediaEditorValidMode(b.sensor));
     var mode = info.mode;
     var label = (b.label && b.label.trim()) || info.label;
     var badge = '<span class="sp-type-badge mdi mdi-speaker"></span>';
     if (mode === "volume") {
       return {
         iconHtml:
-          '<span class="sp-sensor-preview"><span class="sp-sensor-value">42</span>' +
-          '<span class="sp-sensor-unit">%</span></span>',
+          '<span class="sp-sensor-preview"><span class="sp-sensor-value">42</span></span>',
         labelHtml:
           '<span class="sp-btn-label-row"><span class="sp-btn-label">' + helpers.escHtml(label) + '</span>' +
           badge + '</span>',
@@ -244,6 +248,7 @@ registerButtonType("media", {
     if (mode === "position") {
       var bgColor = (typeof state !== "undefined" && state.offColor) ? state.offColor : "313131";
       var progressColor = "444444";
+      var positionLabel = b.precision === "state" ? "Paused" : label;
       return {
         iconHtml:
           '<span class="sp-slider-preview" style="inset:-2px;background:#' + helpers.escHtml(bgColor) + '">' +
@@ -252,7 +257,7 @@ registerButtonType("media", {
           '<span class="sp-sensor-preview sp-media-position-time">' +
           '<span class="sp-sensor-value">0:00</span></span>',
         labelHtml:
-          '<span class="sp-btn-label-row"><span class="sp-btn-label">' + helpers.escHtml(label) + '</span>' +
+          '<span class="sp-btn-label-row"><span class="sp-btn-label">' + helpers.escHtml(positionLabel) + '</span>' +
           badge + '</span>',
       };
     }

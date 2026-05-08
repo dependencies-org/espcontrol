@@ -36,7 +36,7 @@ font:
   # Media now-playing titles (sensor value size, full text glyph coverage)
   - file: "gfonts://Roboto@Light"
     id: media_title_font_md_square
-    size: 66
+    size: 52
     bpp: 4
     glyphs: !include ../../../common/assets/text_glyphs.yaml
     extras:
@@ -62,6 +62,22 @@ font:
     bpp: 4
     glyphs:
       - "0123456789.-"
+
+  # Volume modal: 96px on the 480px S3 reference scaled to this 720px short side
+  - file: "gfonts://Roboto@Thin"
+    id: volume_modal_number_font_md_square
+    size: 144
+    bpp: 4
+    glyphs:
+      - "0123456789"
+
+  # Volume modal labels: 22px on the 480px S3 reference scaled to this 720px short side
+  - file: "gfonts://Roboto"
+    id: volume_modal_label_font_md_square
+    size: 33
+    bpp: 4
+    glyphs:
+      - "Volume"
 
   # Top bar clock and temperature (28px)
   - file: "gfonts://Roboto"

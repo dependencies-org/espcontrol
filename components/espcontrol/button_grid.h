@@ -131,6 +131,7 @@ inline ParsedCfg normalize_parsed_cfg(ParsedCfg p) {
       if (p.label.empty() || p.label == "Media") p.label = "Volume";
       p.icon = "Auto";
     }
+    if (p.sensor == "position" && (p.label.empty() || p.label == "Track")) p.label = "Position";
   }
   return p;
 }
@@ -3501,13 +3502,22 @@ struct SliderCtx {
   bool light_state_known = false;
   bool light_temp_has_kelvin = false;
   int light_temp_last_kelvin = 2000;
-  bool show_kelvin = false;
+  bool light_temp_dragging = false;
   lv_obj_t *text_lbl = nullptr;
   std::string cached_label;
 };
 
 constexpr uint32_t MEDIA_SEEK_PENDING_TIMEOUT_MS = 3000;
 constexpr float MEDIA_SEEK_MATCH_TOLERANCE_SECONDS = 2.0f;
+constexpr lv_coord_t MEDIA_VOLUME_REFERENCE_SIDE_PX = 480;
+constexpr lv_coord_t MEDIA_VOLUME_ARC_STROKE_REF_PX = 17;
+constexpr lv_coord_t MEDIA_VOLUME_BACK_BUTTON_REF_PX = 46;
+constexpr lv_coord_t MEDIA_VOLUME_BUTTON_REF_PX = 80;
+constexpr lv_coord_t MEDIA_VOLUME_INSET_REF_PX = 18;
+constexpr lv_coord_t MEDIA_VOLUME_CONTROLS_GAP_REF_PX = 24;
+constexpr lv_coord_t MEDIA_VOLUME_CONTROLS_DOWN_REF_PX = 22;
+constexpr lv_coord_t MEDIA_VOLUME_TITLE_GAP_REF_PX = 10;
+constexpr lv_coord_t MEDIA_VOLUME_UNIT_Y_REF_PX = -22;
 
 struct MediaVolumeCtx {
   std::string entity_id;
@@ -3516,6 +3526,8 @@ struct MediaVolumeCtx {
   int pending_pct = -1;
   uint32_t pending_until_ms = 0;
   uint32_t accent_color = DEFAULT_SLIDER_COLOR;
+  uint32_t secondary_color = CLIMATE_NEUTRAL_COLOR;
+  uint32_t tertiary_color = DEFAULT_TERTIARY_COLOR;
   lv_obj_t *btn = nullptr;
   lv_obj_t *label_lbl = nullptr;
   lv_obj_t *pct_lbl = nullptr;
@@ -3548,6 +3560,11 @@ struct MediaVolumeModalUi {
 inline MediaVolumeModalUi &media_volume_modal_ui() {
   static MediaVolumeModalUi ui;
   return ui;
+}
+
+inline lv_coord_t media_volume_card_radius(MediaVolumeCtx *ctx) {
+  if (!ctx || !ctx->btn) return 18;
+  return lv_obj_get_style_radius(ctx->btn, LV_PART_MAIN);
 }
 
 inline void slider_fit_to_button(lv_obj_t *slider, lv_obj_t *btn, bool horizontal) {
@@ -3861,29 +3878,31 @@ inline void subscribe_slider_state(lv_obj_t *btn_ptr, lv_obj_t *icon_lbl,
 
 // ── Light temperature card helpers ───────────────────────────────────
 
-// Apply the resolved label for a light_temperature card. When show_kelvin is
-// enabled and the light is on, displays "<K>K"; otherwise restores the cached
-// configured label (user-set label or last known friendly_name).
-//
 // Bulbs store color temperature as integer mireds, so a 5500K command echoes
-// back from HA as ~5494K. Rounding the displayed value to 50K makes the drag
-// preview and post-release echo render identically.
-inline void light_temp_apply_label(SliderCtx *ctx, int kelvin) {
+// back from HA as ~5494K. Rounding the drag preview to 50K keeps the displayed
+// value steady while the user fine-tunes the slider.
+inline int light_temp_rounded_kelvin(SliderCtx *ctx, int kelvin) {
+  if (!ctx) return kelvin;
+  int rounded = ((kelvin + 25) / 50) * 50;
+  if (rounded < ctx->kelvin_min) rounded = ctx->kelvin_min;
+  if (rounded > ctx->kelvin_max) rounded = ctx->kelvin_max;
+  return rounded;
+}
+
+inline void light_temp_show_drag_kelvin(SliderCtx *ctx, int kelvin) {
   if (!ctx || !ctx->text_lbl) return;
-  if (ctx->show_kelvin && ctx->light_on) {
-    int rounded = ((kelvin + 25) / 50) * 50;
-    if (rounded < ctx->kelvin_min) rounded = ctx->kelvin_min;
-    if (rounded > ctx->kelvin_max) rounded = ctx->kelvin_max;
-    char buf[16];
-    snprintf(buf, sizeof(buf), "%dK", rounded);
-    lv_label_set_text(ctx->text_lbl, buf);
-  } else {
-    lv_label_set_text(ctx->text_lbl, ctx->cached_label.c_str());
-  }
+  char buf[16];
+  snprintf(buf, sizeof(buf), "%dK", light_temp_rounded_kelvin(ctx, kelvin));
+  lv_label_set_text(ctx->text_lbl, buf);
+}
+
+inline void light_temp_restore_label(SliderCtx *ctx) {
+  if (!ctx || !ctx->text_lbl) return;
+  lv_label_set_text(ctx->text_lbl, ctx->cached_label.c_str());
 }
 
 // Subscribe to friendly_name and keep the SliderCtx cached_label in sync;
-// only writes to the visible label when not currently displaying kelvin.
+// the bottom label always stays as a configured label or friendly name.
 inline void subscribe_friendly_name_for_light_temp(lv_obj_t *text_lbl,
                                                     SliderCtx *ctx,
                                                     const std::string &entity_id) {
@@ -3893,9 +3912,8 @@ inline void subscribe_friendly_name_for_light_temp(lv_obj_t *text_lbl,
     std::function<void(esphome::StringRef)>(
       [text_lbl, ctx](esphome::StringRef name) {
         if (ctx) ctx->cached_label = string_ref_limited(name, HA_FRIENDLY_NAME_MAX_LEN);
-        if (!ctx || !ctx->show_kelvin || !ctx->light_on) {
-          lv_label_set_text_limited(text_lbl, name, HA_FRIENDLY_NAME_MAX_LEN);
-        }
+        if (ctx && ctx->light_temp_dragging) return;
+        lv_label_set_text_limited(text_lbl, name, HA_FRIENDLY_NAME_MAX_LEN);
       })
   );
 }
@@ -3917,7 +3935,6 @@ inline void light_temp_apply_kelvin_state(SliderCtx *ctx, lv_obj_t *btn_ptr,
   if (kelvin_color && ctx->fill)
     lv_obj_set_style_bg_color(ctx->fill,
       kelvin_to_fill_color(k, ctx->kelvin_min, ctx->kelvin_max), LV_PART_MAIN);
-  light_temp_apply_label(ctx, k);
 }
 
 // Subscribe to on/off state plus color_temp_kelvin for a light temperature slider.
@@ -3934,12 +3951,10 @@ inline void subscribe_light_temp_state(lv_obj_t *btn_ptr, lv_obj_t *slider,
     std::function<void(esphome::StringRef)>(
       [slider, btn_ptr, kelvin_color, sctx](esphome::StringRef state) {
         bool on = is_entity_on_ref(state);
-        bool was_on = sctx ? sctx->light_on : false;
         if (sctx) {
           sctx->light_state_known = true;
           sctx->light_on = on;
         }
-        bool applied_cached = false;
         if (!on) {
           lv_slider_set_value(slider, 0, LV_ANIM_OFF);
           if (sctx && sctx->fill)
@@ -3947,13 +3962,6 @@ inline void subscribe_light_temp_state(lv_obj_t *btn_ptr, lv_obj_t *slider,
         } else if (sctx && sctx->light_temp_has_kelvin) {
           light_temp_apply_kelvin_state(
             sctx, btn_ptr, slider, sctx->light_temp_last_kelvin, kelvin_color);
-          applied_cached = true;
-        }
-        // Refresh label on any on↔off transition so kelvin/cached_label swaps.
-        if (sctx && sctx->show_kelvin && was_on != on && !applied_cached) {
-          int cur_k = sctx->kelvin_min + lv_slider_get_value(slider) *
-                      (sctx->kelvin_max - sctx->kelvin_min) / 100;
-          light_temp_apply_label(sctx, cur_k);
         }
       })
   );
@@ -3986,6 +3994,8 @@ inline void setup_light_temp_visual(BtnSlot &s, const ParsedCfg &p, uint32_t on_
   lv_obj_t *slider = setup_slider_widget(s.btn, on_color, false);
   lv_coord_t pad = lv_obj_get_style_radius(s.btn, LV_PART_MAIN) + 4;
   lv_obj_align(s.icon_lbl, LV_ALIGN_TOP_LEFT, pad, pad);
+  lv_label_set_long_mode(s.icon_lbl, LV_LABEL_LONG_CLIP);
+  lv_obj_set_width(s.icon_lbl, lv_pct(100));
   lv_obj_align(s.text_lbl, LV_ALIGN_BOTTOM_LEFT, pad, -pad);
   lv_obj_set_user_data(s.sensor_container, (void *)slider);
 
@@ -4003,7 +4013,6 @@ inline void setup_light_temp_visual(BtnSlot &s, const ParsedCfg &p, uint32_t on_
   ctx->kelvin_max = max_k;
   ctx->kelvin_color = kcolor;
   ctx->light_on = false;
-  ctx->show_kelvin = (p.sensor == "kelvin");
   ctx->text_lbl = s.text_lbl;
   ctx->cached_label = p.label;  // may be empty; friendly_name sub fills it later
   lv_obj_set_user_data(slider, (void *)ctx);
@@ -4030,14 +4039,17 @@ inline void setup_light_temp_visual(BtnSlot &s, const ParsedCfg &p, uint32_t on_
     c->light_state_known = true;
     c->light_temp_has_kelvin = true;
     c->light_temp_last_kelvin = k;
-    if (c->show_kelvin) {
-      light_temp_apply_label(c, k);
-    }
+    c->light_temp_dragging = true;
+    light_temp_show_drag_kelvin(c, k);
   }, LV_EVENT_VALUE_CHANGED, nullptr);
 
   lv_obj_add_event_cb(slider, [](lv_event_t *e) {
     lv_obj_t *sl = static_cast<lv_obj_t *>(lv_event_get_target(e));
     SliderCtx *c = (SliderCtx *)lv_obj_get_user_data(sl);
+    if (c) {
+      c->light_temp_dragging = false;
+      light_temp_restore_label(c);
+    }
     if (c && !c->entity_id.empty())
       send_light_temp_action(c->entity_id, lv_slider_get_value(sl), c->kelvin_min, c->kelvin_max);
   }, LV_EVENT_RELEASED, nullptr);
@@ -4061,6 +4073,7 @@ inline std::string media_default_label(const std::string &mode) {
   if (mode == "previous") return "Previous";
   if (mode == "next") return "Next";
   if (mode == "volume") return "Volume";
+  if (mode == "position") return "Position";
   if (mode == "play_pause") return "Play/Pause";
   return "Media";
 }
@@ -4118,7 +4131,7 @@ inline void media_volume_set_card_value(MediaVolumeCtx *ctx, int pct) {
   char buf[8];
   snprintf(buf, sizeof(buf), "%d", pct);
   lv_label_set_text(ctx->pct_lbl, buf);
-  if (ctx->unit_lbl) lv_label_set_text(ctx->unit_lbl, " %");
+  if (ctx->unit_lbl) lv_label_set_text(ctx->unit_lbl, "");
 }
 
 inline void media_volume_apply_percent(MediaVolumeCtx *ctx, int pct,
@@ -4137,8 +4150,6 @@ inline void media_volume_apply_percent(MediaVolumeCtx *ctx, int pct,
 
 inline void media_volume_hide_modal() {
   MediaVolumeModalUi &ui = media_volume_modal_ui();
-  std::function<void()> resume_home_idle;
-  if (ui.active) resume_home_idle = ui.active->resume_home_idle;
   if (ui.overlay) lv_obj_del(ui.overlay);
   ui.overlay = nullptr;
   ui.panel = nullptr;
@@ -4152,7 +4163,6 @@ inline void media_volume_hide_modal() {
   ui.plus_btn = nullptr;
   ui.active = nullptr;
   ui.updating_arc = false;
-  if (resume_home_idle) resume_home_idle();
 }
 
 inline lv_obj_t *media_volume_create_round_button(lv_obj_t *parent, lv_coord_t size,
@@ -4177,6 +4187,10 @@ inline lv_obj_t *media_volume_create_round_button(lv_obj_t *parent, lv_coord_t s
   if (font) lv_obj_set_style_text_font(label, font, LV_PART_MAIN);
   lv_obj_center(label);
   return btn;
+}
+
+inline lv_coord_t media_volume_scaled_px(lv_coord_t px, lv_coord_t short_side) {
+  return px * short_side / MEDIA_VOLUME_REFERENCE_SIDE_PX;
 }
 
 inline void media_volume_grid_card_rect(lv_coord_t sw, lv_coord_t sh,
@@ -4228,28 +4242,30 @@ inline void media_volume_layout_modal(MediaVolumeCtx *ctx) {
   lv_coord_t sw = disp ? lv_disp_get_hor_res(disp) : 480;
   lv_coord_t sh = disp ? lv_disp_get_ver_res(disp) : 480;
   lv_coord_t short_side = sw < sh ? sw : sh;
-  lv_coord_t panel_x = 0;
+  lv_coord_t panel_x = 4;
   lv_coord_t panel_y = 0;
-  lv_coord_t panel_w = sw;
+  lv_coord_t panel_w = sw - panel_x - 4;
   lv_coord_t panel_h = sh;
+  ClimateHomeGridMetrics &metrics = climate_home_grid_metrics();
+  if (metrics.page) {
+    lv_obj_update_layout(metrics.page);
+    panel_x = lv_obj_get_style_pad_left(metrics.page, LV_PART_MAIN);
+    panel_y = lv_obj_get_style_pad_top(metrics.page, LV_PART_MAIN);
+    lv_coord_t panel_right = lv_obj_get_style_pad_right(metrics.page, LV_PART_MAIN);
+    lv_coord_t panel_bottom = lv_obj_get_style_pad_bottom(metrics.page, LV_PART_MAIN);
+    panel_w = sw - panel_x - panel_right;
+    panel_h = sh - panel_y - panel_bottom;
+  }
   int width_percent = normalize_width_compensation_percent(ctx->width_compensation_percent);
-  lv_coord_t min_side = panel_w < panel_h ? panel_w : panel_h;
-  lv_coord_t back_size = min_side * 22 / 100;
-  if (back_size < 28) back_size = 28;
-  if (back_size > 46) back_size = 46;
-  lv_coord_t btn_size = min_side * 28 / 100;
-  if (btn_size < 36) btn_size = 36;
-  if (btn_size > 62) btn_size = 62;
-  lv_coord_t inset = min_side * 6 / 100;
+  lv_coord_t back_size = media_volume_scaled_px(MEDIA_VOLUME_BACK_BUTTON_REF_PX, short_side);
+  lv_coord_t btn_size = media_volume_scaled_px(MEDIA_VOLUME_BUTTON_REF_PX, short_side);
+  lv_coord_t inset = media_volume_scaled_px(MEDIA_VOLUME_INSET_REF_PX, short_side);
   if (inset < 8) inset = 8;
-  lv_coord_t arc_stroke = min_side * 8 / 100;
-  if (arc_stroke < 8) arc_stroke = 8;
-  if (arc_stroke > 14) arc_stroke = 14;
-  lv_coord_t controls_gap = btn_size / 5;
-  if (controls_gap < 8) controls_gap = 8;
+  lv_coord_t arc_stroke = media_volume_scaled_px(MEDIA_VOLUME_ARC_STROKE_REF_PX, short_side);
+  lv_coord_t controls_gap = media_volume_scaled_px(MEDIA_VOLUME_CONTROLS_GAP_REF_PX, short_side);
   lv_coord_t arc_size = panel_w < panel_h ? panel_w : panel_h;
   arc_size -= inset * 2;
-  lv_coord_t reserved_bottom = btn_size + inset * 2;
+  lv_coord_t reserved_bottom = btn_size / 3 + inset;
   lv_coord_t available_h = panel_h - inset * 2;
   if (available_h > reserved_bottom) {
     lv_coord_t fit_h = available_h - reserved_bottom + arc_stroke;
@@ -4265,9 +4281,19 @@ inline void media_volume_layout_modal(MediaVolumeCtx *ctx) {
   lv_obj_set_size(ui.overlay, lv_pct(100), lv_pct(100));
   lv_obj_set_size(ui.panel, panel_w, panel_h);
   lv_obj_set_pos(ui.panel, panel_x, panel_y);
+  lv_obj_set_style_radius(ui.panel, media_volume_card_radius(ctx), LV_PART_MAIN);
   lv_coord_t arc_center_x = (arc_size - visible_arc_w) / 2;
-  lv_coord_t arc_center_y = inset + arc_size / 2 - panel_h / 2 + (short_side < 520 ? 6 : 10);
-  lv_coord_t controls_center_y = panel_h / 2 - inset - btn_size / 2;
+  lv_coord_t arc_center_y = 0;
+  lv_coord_t controls_center_y = arc_size / 2 - btn_size / 2 - inset +
+    media_volume_scaled_px(MEDIA_VOLUME_CONTROLS_DOWN_REF_PX, short_side);
+  lv_coord_t value_center_y = arc_stroke / 2;
+  if (ui.title_lbl) lv_obj_update_layout(ui.title_lbl);
+  if (ui.pct_row) lv_obj_update_layout(ui.pct_row);
+  lv_coord_t title_h = ui.title_lbl ? lv_obj_get_height(ui.title_lbl) : 0;
+  lv_coord_t value_h = ui.pct_row ? lv_obj_get_height(ui.pct_row) : 0;
+  lv_coord_t title_gap = media_volume_scaled_px(MEDIA_VOLUME_TITLE_GAP_REF_PX, short_side);
+  lv_coord_t title_center_y = value_center_y -
+    (value_h / 2 + title_gap + title_h / 2);
 
   lv_obj_set_size(ui.back_btn, back_size, back_size);
   lv_obj_set_style_radius(ui.back_btn, back_size / 2, LV_PART_MAIN);
@@ -4282,8 +4308,10 @@ inline void media_volume_layout_modal(MediaVolumeCtx *ctx) {
   lv_obj_set_style_radius(ui.minus_btn, btn_size / 2, LV_PART_MAIN);
   lv_obj_set_size(ui.plus_btn, btn_size, btn_size);
   lv_obj_set_style_radius(ui.plus_btn, btn_size / 2, LV_PART_MAIN);
-  lv_obj_align(ui.title_lbl, LV_ALIGN_TOP_MID, 0, inset);
-  lv_obj_align(ui.pct_row, LV_ALIGN_CENTER, 0, arc_center_y + arc_stroke);
+  lv_obj_set_style_translate_y(ui.pct_unit_lbl,
+    media_volume_scaled_px(MEDIA_VOLUME_UNIT_Y_REF_PX, short_side), LV_PART_MAIN);
+  lv_obj_align(ui.title_lbl, LV_ALIGN_CENTER, 0, title_center_y);
+  lv_obj_align(ui.pct_row, LV_ALIGN_CENTER, 0, value_center_y);
   lv_obj_align(ui.minus_btn, LV_ALIGN_CENTER, -(btn_size + controls_gap) / 2, controls_center_y);
   lv_obj_align(ui.plus_btn, LV_ALIGN_CENTER, (btn_size + controls_gap) / 2, controls_center_y);
   lv_obj_move_foreground(ui.back_btn);
@@ -4303,42 +4331,38 @@ inline void media_volume_set_modal_value(MediaVolumeCtx *ctx, int pct) {
     snprintf(buf, sizeof(buf), "%d", pct);
     lv_label_set_text(ui.pct_lbl, buf);
   }
-  if (ui.pct_unit_lbl) lv_label_set_text(ui.pct_unit_lbl, "%");
+  if (ui.pct_unit_lbl) lv_label_set_text(ui.pct_unit_lbl, "");
 }
 
 inline void media_volume_open_modal(MediaVolumeCtx *ctx) {
   if (!ctx) return;
   media_volume_hide_modal();
-  if (ctx->pause_home_idle) ctx->pause_home_idle();
   MediaVolumeModalUi &ui = media_volume_modal_ui();
   ui.active = ctx;
 
-  lv_obj_t *parent = lv_scr_act();
+  lv_obj_t *parent = lv_layer_top();
   ui.overlay = lv_obj_create(parent);
   lv_obj_set_size(ui.overlay, lv_pct(100), lv_pct(100));
-  lv_obj_set_style_bg_color(ui.overlay, lv_color_hex(0x000000), LV_PART_MAIN);
-  lv_obj_set_style_bg_opa(ui.overlay, LV_OPA_60, LV_PART_MAIN);
+  lv_obj_set_style_bg_opa(ui.overlay, LV_OPA_TRANSP, LV_PART_MAIN);
   lv_obj_set_style_border_width(ui.overlay, 0, LV_PART_MAIN);
   lv_obj_set_style_pad_all(ui.overlay, 0, LV_PART_MAIN);
   lv_obj_clear_flag(ui.overlay, LV_OBJ_FLAG_SCROLLABLE);
-  lv_obj_add_event_cb(ui.overlay, [](lv_event_t *) { media_volume_hide_modal(); },
-    LV_EVENT_CLICKED, nullptr);
 
   ui.panel = lv_obj_create(ui.overlay);
-  lv_obj_set_style_bg_color(ui.panel, lv_color_hex(0x252525), LV_PART_MAIN);
+  lv_obj_set_style_bg_color(ui.panel, lv_color_hex(ctx->tertiary_color), LV_PART_MAIN);
   lv_obj_set_style_bg_opa(ui.panel, LV_OPA_COVER, LV_PART_MAIN);
   lv_obj_set_style_border_width(ui.panel, 0, LV_PART_MAIN);
   lv_obj_set_style_shadow_width(ui.panel, 0, LV_PART_MAIN);
-  lv_obj_set_style_radius(ui.panel, 18, LV_PART_MAIN);
+  lv_obj_set_style_radius(ui.panel, media_volume_card_radius(ctx), LV_PART_MAIN);
   lv_obj_set_style_pad_all(ui.panel, 0, LV_PART_MAIN);
   lv_obj_clear_flag(ui.panel, LV_OBJ_FLAG_SCROLLABLE);
 
   ui.back_btn = media_volume_create_round_button(ui.panel, 32, "\U000F0141",
-    ctx->icon_font, 0x454545, 0x252525, ctx->width_compensation_percent);
+    ctx->icon_font, 0x454545, ctx->tertiary_color, ctx->width_compensation_percent);
   lv_obj_set_style_bg_opa(ui.back_btn, LV_OPA_TRANSP, LV_PART_MAIN);
   lv_obj_set_style_border_width(ui.back_btn, 0, LV_PART_MAIN);
   lv_obj_t *back_label = lv_obj_get_child(ui.back_btn, 0);
-  if (back_label) lv_obj_set_style_text_color(back_label, lv_color_hex(0x000000), LV_PART_MAIN);
+  if (back_label) lv_obj_set_style_text_color(back_label, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
   lv_obj_add_event_cb(ui.back_btn, [](lv_event_t *) {
     media_volume_hide_modal();
   }, LV_EVENT_CLICKED, nullptr);
@@ -4391,17 +4415,17 @@ inline void media_volume_open_modal(MediaVolumeCtx *ctx) {
   apply_width_compensation(ui.pct_lbl, ctx->width_compensation_percent);
 
   ui.pct_unit_lbl = lv_label_create(ui.pct_row);
-  lv_label_set_text(ui.pct_unit_lbl, "%");
+  lv_label_set_text(ui.pct_unit_lbl, "");
   lv_obj_set_style_text_color(ui.pct_unit_lbl, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
   lv_obj_set_style_text_align(ui.pct_unit_lbl, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
   if (ctx->unit_font) lv_obj_set_style_text_font(ui.pct_unit_lbl, ctx->unit_font, LV_PART_MAIN);
-  lv_obj_set_style_translate_y(ui.pct_unit_lbl, -15, LV_PART_MAIN);
+  lv_obj_set_style_translate_y(ui.pct_unit_lbl, MEDIA_VOLUME_UNIT_Y_REF_PX, LV_PART_MAIN);
   apply_width_compensation(ui.pct_unit_lbl, ctx->width_compensation_percent);
 
   ui.minus_btn = media_volume_create_round_button(ui.panel, 72, find_icon("Minus"),
-    ctx->icon_font, 0xBDBDBD, 0x252525, ctx->width_compensation_percent);
+    ctx->icon_font, 0xBDBDBD, ctx->tertiary_color, ctx->width_compensation_percent);
   ui.plus_btn = media_volume_create_round_button(ui.panel, 72, find_icon("Plus"),
-    ctx->icon_font, 0xBDBDBD, 0x252525, ctx->width_compensation_percent);
+    ctx->icon_font, 0xBDBDBD, ctx->tertiary_color, ctx->width_compensation_percent);
   lv_obj_add_event_cb(ui.minus_btn, [](lv_event_t *) {
     MediaVolumeModalUi &ui = media_volume_modal_ui();
     if (ui.active) media_volume_apply_percent(ui.active, ui.active->current_pct - 1, true, true);
@@ -4593,14 +4617,18 @@ inline void setup_media_now_playing_layout(lv_obj_t *btn, lv_obj_t *icon_lbl,
                                            const lv_font_t *title_font,
                                            lv_coord_t pad,
                                            bool limit_title_lines) {
+  constexpr lv_coord_t TITLE_LINE_SPACE = -1;
   lv_obj_clear_flag(btn, LV_OBJ_FLAG_CLICKABLE);
   if (icon_lbl) lv_obj_add_flag(icon_lbl, LV_OBJ_FLAG_HIDDEN);
   if (title_lbl) {
     if (title_font) lv_obj_set_style_text_font(title_lbl, title_font, LV_PART_MAIN);
+    lv_obj_set_style_text_line_space(title_lbl, TITLE_LINE_SPACE, LV_PART_MAIN);
     if (limit_title_lines) {
       const lv_font_t *font = title_font ? title_font : lv_obj_get_style_text_font(title_lbl, LV_PART_MAIN);
       lv_label_set_long_mode(title_lbl, LV_LABEL_LONG_DOT);
-      if (font && font->line_height > 0) lv_obj_set_size(title_lbl, lv_pct(100), font->line_height * 2);
+      if (font && font->line_height > 0) {
+        lv_obj_set_size(title_lbl, lv_pct(100), font->line_height * 2 + TITLE_LINE_SPACE);
+      }
       else lv_obj_set_width(title_lbl, lv_pct(100));
     } else {
       lv_label_set_long_mode(title_lbl, LV_LABEL_LONG_WRAP);
@@ -4611,9 +4639,12 @@ inline void setup_media_now_playing_layout(lv_obj_t *btn, lv_obj_t *icon_lbl,
     lv_obj_move_foreground(title_lbl);
   }
   if (artist_lbl) {
+    const lv_font_t *font = lv_obj_get_style_text_font(artist_lbl, LV_PART_MAIN);
     lv_label_set_text(artist_lbl, "--");
+    lv_label_set_long_mode(artist_lbl, LV_LABEL_LONG_DOT);
+    if (font && font->line_height > 0) lv_obj_set_size(artist_lbl, lv_pct(100), font->line_height);
+    else lv_obj_set_width(artist_lbl, lv_pct(100));
     lv_obj_align(artist_lbl, LV_ALIGN_BOTTOM_LEFT, 0, 0);
-    configure_button_label_wrap(artist_lbl);
     lv_obj_move_foreground(artist_lbl);
   }
 }
@@ -4636,7 +4667,7 @@ inline void setup_media_volume_button(lv_obj_t *btn, lv_obj_t *icon_lbl,
     lv_label_set_text(sensor_lbl, "--");
   }
   if (unit_lbl) {
-    lv_label_set_text(unit_lbl, " %");
+    lv_label_set_text(unit_lbl, "");
   }
   if (text_lbl) {
     lv_label_set_text(text_lbl, media_label(p).c_str());
@@ -4665,7 +4696,7 @@ inline lv_obj_t *setup_media_slider_layout(lv_obj_t *btn, lv_obj_t *icon_lbl,
     }
     if (text_lbl) {
       lv_obj_clear_flag(text_lbl, LV_OBJ_FLAG_HIDDEN);
-      lv_label_set_text(text_lbl, media_position_show_state(p) ? "Paused" : (p.label.empty() ? "Track" : p.label.c_str()));
+      lv_label_set_text(text_lbl, media_position_show_state(p) ? "Paused" : media_action_label(p, mode).c_str());
       lv_obj_align(text_lbl, LV_ALIGN_BOTTOM_LEFT, pad, -pad);
       configure_button_label_wrap(text_lbl);
       lv_obj_move_foreground(text_lbl);
@@ -4688,6 +4719,10 @@ inline lv_obj_t *setup_media_slider_layout(lv_obj_t *btn, lv_obj_t *icon_lbl,
   lv_obj_t *slider = setup_slider_widget(btn, on_color, horizontal);
   lv_obj_t *fill = lv_obj_get_child(btn, 0);
   lv_obj_t *track = nullptr;
+  if (position) {
+    if (value_lbl) lv_obj_move_foreground(value_lbl);
+    if (text_lbl) lv_obj_move_foreground(text_lbl);
+  }
 
   SliderCtx *ctx = new SliderCtx();
   ctx->entity_id = p.entity;
@@ -4766,7 +4801,7 @@ inline void setup_media_card(BtnSlot &s, const ParsedCfg &p, uint32_t on_color,
                              const lv_font_t *sensor_font,
                              const lv_font_t *media_title_font,
                              int width_compensation_percent = 100,
-                             int /*row_span*/ = 1,
+                             int row_span = 1,
                              int col_span = 1) {
   lv_obj_add_flag(s.sensor_container, LV_OBJ_FLAG_HIDDEN);
   lv_coord_t pad = lv_obj_get_style_radius(s.btn, LV_PART_MAIN) + 4;
@@ -4789,7 +4824,7 @@ inline void setup_media_card(BtnSlot &s, const ParsedCfg &p, uint32_t on_color,
     s.sensor_lbl = title_lbl;
     lv_obj_set_user_data(s.sensor_container, (void *)title_lbl);
     setup_media_now_playing_layout(
-      s.btn, s.icon_lbl, s.sensor_lbl, s.text_lbl, media_title_font, pad, col_span == 1);
+      s.btn, s.icon_lbl, s.sensor_lbl, s.text_lbl, media_title_font, pad, row_span == 1);
     return;
   }
   if (mode == "position") {
@@ -4849,6 +4884,8 @@ inline MediaVolumeCtx *create_media_volume_context(lv_obj_t *btn,
                                                    lv_obj_t *label_lbl,
                                                    const ParsedCfg &p,
                                                    uint32_t accent_color,
+                                                   uint32_t secondary_color,
+                                                   uint32_t tertiary_color,
                                                    const lv_font_t *value_font,
                                                    const lv_font_t *number_font,
                                                    const lv_font_t *unit_font,
@@ -4863,6 +4900,8 @@ inline MediaVolumeCtx *create_media_volume_context(lv_obj_t *btn,
   ctx->entity_id = p.entity;
   ctx->label = media_label(p);
   ctx->accent_color = accent_color;
+  ctx->secondary_color = secondary_color;
+  ctx->tertiary_color = tertiary_color;
   ctx->btn = btn;
   ctx->label_lbl = label_lbl;
   ctx->pct_lbl = pct_lbl;
@@ -5325,11 +5364,14 @@ struct GridConfig {
   bool color_correction;
   bool wrap_tall_labels;
   int width_compensation_percent = 100;
+  int volume_width_compensation_percent = 100;
   const lv_font_t *icon_font;
   const lv_font_t *climate_control_icon_font;
   const lv_font_t *sp_sensor_font;
   const lv_font_t *media_title_font;
   const lv_font_t *volume_number_font;
+  const lv_font_t *volume_label_font = nullptr;
+  const lv_font_t *volume_icon_font = nullptr;
   const lv_font_t *climate_target_font;
   std::string temperature_unit;
   std::string timezone;
@@ -5339,7 +5381,7 @@ struct GridConfig {
 };
 
 inline bool experimental_card_enabled(const ParsedCfg &p, bool developer_experimental_features) {
-  if (p.type == "climate" || p.type == "light_temperature") return developer_experimental_features;
+  if (p.type == "climate") return developer_experimental_features;
   return true;
 }
 
@@ -5751,11 +5793,18 @@ inline void grid_phase2(
         } else if (mode == "volume") {
           MediaVolumeCtx *ctx = create_media_volume_context(
             s.btn, s.text_lbl, p, has_on ? on_val : DEFAULT_SLIDER_COLOR,
+            has_off ? off_val : CLIMATE_NEUTRAL_COLOR,
+            has_sensor_color ? sensor_val : DEFAULT_TERTIARY_COLOR,
             cfg.sp_sensor_font,
             cfg.volume_number_font ? cfg.volume_number_font : cfg.sp_sensor_font,
-            lv_obj_get_style_text_font(s.unit_lbl, LV_PART_MAIN),
-            lv_obj_get_style_text_font(s.text_lbl, LV_PART_MAIN),
-            cfg.icon_font, cfg.width_compensation_percent,
+            cfg.volume_label_font
+              ? cfg.volume_label_font
+              : lv_obj_get_style_text_font(s.unit_lbl, LV_PART_MAIN),
+            cfg.volume_label_font
+              ? cfg.volume_label_font
+              : lv_obj_get_style_text_font(s.text_lbl, LV_PART_MAIN),
+            cfg.icon_font,
+            cfg.volume_width_compensation_percent,
             s.sensor_lbl, s.unit_lbl,
             cfg.pause_home_idle, cfg.resume_home_idle);
           subscribe_media_volume_state(ctx);
@@ -6148,11 +6197,18 @@ inline void grid_phase2(
             MediaVolumeCtx *ctx = create_media_volume_context(
               sub_slot.btn, sub_slot.text_lbl, sb_cfg,
               has_on ? on_val : DEFAULT_SLIDER_COLOR,
+              has_off ? off_val : CLIMATE_NEUTRAL_COLOR,
+              has_sensor_color ? sensor_val : DEFAULT_TERTIARY_COLOR,
               cfg.sp_sensor_font,
               cfg.volume_number_font ? cfg.volume_number_font : cfg.sp_sensor_font,
-              lv_obj_get_style_text_font(sub_slot.unit_lbl, LV_PART_MAIN),
-              lv_obj_get_style_text_font(sub_slot.text_lbl, LV_PART_MAIN),
-              cfg.icon_font, cfg.width_compensation_percent,
+              cfg.volume_label_font
+                ? cfg.volume_label_font
+                : lv_obj_get_style_text_font(sub_slot.unit_lbl, LV_PART_MAIN),
+              cfg.volume_label_font
+                ? cfg.volume_label_font
+                : lv_obj_get_style_text_font(sub_slot.text_lbl, LV_PART_MAIN),
+              cfg.icon_font,
+              cfg.volume_width_compensation_percent,
               sub_slot.sensor_lbl, sub_slot.unit_lbl,
               cfg.pause_home_idle, cfg.resume_home_idle);
             subscribe_media_volume_state(ctx);
